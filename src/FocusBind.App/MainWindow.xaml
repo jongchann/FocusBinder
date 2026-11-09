@@ -1,0 +1,112 @@
+<Window x:Class="FocusBind.App.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="FocusBind" Height="850" Width="1140" MinHeight="720" MinWidth="1000" ResizeMode="CanResize">
+    <Grid Margin="28,24">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+        <StackPanel>
+            <DockPanel Margin="0,0,0,20">
+                <Button DockPanel.Dock="Right" Content="최소화" Click="Minimize_Click" VerticalAlignment="Center" ToolTip="작업 표시줄로 최소화"/>
+                <StackPanel><TextBlock Text="FOCUSBIND  /  CONTROL SPACE" Foreground="{StaticResource AccentBrush}" FontSize="11" FontWeight="Bold" Margin="0,0,0,7"/>
+                    <TextBlock FontSize="27" FontWeight="SemiBold" Text="나의 컨트롤 공간"/>
+                    <TextBlock Margin="0,7,0,0" Foreground="{StaticResource MutedBrush}" Text="대상 창을 선택하고, 나에게 맞는 키와 클릭 위치를 구성하세요."/>
+                </StackPanel>
+            </DockPanel>
+            <Border Background="#E6F4F0" BorderBrush="#CAE5DD" BorderThickness="1" CornerRadius="8" Padding="15,12" Margin="0,0,0,14">
+                <StackPanel><TextBlock Text="매핑 상태" Foreground="{StaticResource AccentBrush}" FontWeight="SemiBold" Margin="0,0,0,5"/>
+                    <TextBlock x:Name="RuntimeStatusText" TextWrapping="Wrap" Text="입력 매핑: 중지됨" MaxHeight="68" TextTrimming="CharacterEllipsis" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}"/>
+                </StackPanel>
+            </Border>
+            <Border Style="{StaticResource Card}" Margin="0,0,0,14" Padding="16,14">
+                <Grid>
+                    <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="245"/></Grid.ColumnDefinitions>
+                    <StackPanel Margin="0,0,20,0">
+                        <DockPanel Margin="0,0,0,10">
+                            <Button DockPanel.Dock="Right" Content="전역 단축키 변경" Click="ShortcutSettings_Click" Padding="10,4" ToolTip="매핑 시작·종료, 볼륨 증가·감소, 음소거 단축키 변경"/>
+                            <TextBlock Text="전역 단축키" FontSize="14" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                        </DockPanel>
+                        <TextBlock x:Name="ShortcutSummaryText" Text="전역 단축키 준비 중" TextWrapping="Wrap" LineHeight="22"/>
+                        <TextBlock x:Name="ShortcutStatusText" TextWrapping="Wrap" Foreground="{StaticResource AccentBrush}" Margin="0,4,0,0"/>
+                        <TextBlock x:Name="AudioTargetText" Text="소리 조절 대상: 단축키를 누를 때 포커스된 앱" Foreground="{StaticResource MutedBrush}" FontSize="11" TextWrapping="Wrap" Margin="0,9,0,0"/>
+                    </StackPanel>
+                    <Border Grid.Column="1" BorderBrush="{StaticResource LineBrush}" BorderThickness="1,0,0,0" Padding="20,0,0,0">
+                        <StackPanel>
+                            <TextBlock Text="프로필 관리" FontSize="14" FontWeight="SemiBold" Margin="0,0,0,12"/>
+                            <TextBlock Text="저장한 프로필을 파일로 보관하거나 가져오세요." TextWrapping="Wrap" Foreground="{StaticResource MutedBrush}" FontSize="11" Margin="0,0,0,12"/>
+                            <Button Content="프로필 가져오기" Click="ImportProfiles_Click" Margin="0,0,0,8"/>
+                            <Button Content="프로필 내보내기" Click="ExportProfiles_Click"/>
+                        </StackPanel>
+                    </Border>
+                </Grid>
+            </Border>
+            <TextBox x:Name="DiagnosticPathBox" IsReadOnly="True" Visibility="Collapsed" Margin="0,0,0,8"
+                     ToolTip="진단 로그 경로 (선택해 복사 가능)" BorderThickness="0" Background="Transparent"
+                     Foreground="#FF526579" FontSize="11"/>
+            <StackPanel x:Name="ElevationPanel" Orientation="Horizontal" Visibility="Collapsed" Margin="0,0,0,10">
+                <TextBlock Text="대상 창의 관리자 권한이 더 높아 입력 감지·주입이 제한될 수 있습니다."
+                           Foreground="#FFB03D38" VerticalAlignment="Center" Margin="0,0,10,0"/>
+                <Button Content="관리자 권한으로 재시작" Click="RestartElevated_Click" Padding="8,3"/>
+            </StackPanel>
+        </StackPanel>
+        <Border Grid.Row="1" Style="{StaticResource Card}" Padding="14" Background="#EDF2F6">
+            <Expander Header="창 정보와 진단" IsExpanded="False">
+            <ScrollViewer MaxHeight="150" VerticalScrollBarVisibility="Auto">
+            <StackPanel>
+                <TextBlock x:Name="EventText" FontWeight="SemiBold" Text="감지 시작 중"/>
+                <TextBlock x:Name="TitleText" Margin="0,8,0,0" TextWrapping="Wrap"/>
+                <TextBlock x:Name="ProcessText" Margin="0,4,0,0" TextWrapping="Wrap"/>
+                <TextBlock x:Name="ClassText" Margin="0,4,0,0"/>
+                <TextBlock x:Name="BoundsText" Margin="0,4,0,0"/>
+                <TextBlock x:Name="DpiText" Margin="0,4,0,0"/>
+            </StackPanel>
+            </ScrollViewer>
+            </Expander>
+        </Border>
+        <Border Grid.Row="2" Style="{StaticResource Card}" Margin="0,18,0,0">
+        <Grid>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="*"/>
+            </Grid.RowDefinitions>
+            <DockPanel Margin="0,0,0,8" LastChildFill="False">
+                <TextBlock FontSize="17" FontWeight="SemiBold" VerticalAlignment="Center" Text="대상 창"/>
+                <Button DockPanel.Dock="Right" HorizontalAlignment="Right" Padding="12,4" Click="RefreshWindows_Click" Content="새로고침"/>
+                <Button DockPanel.Dock="Right" HorizontalAlignment="Right" Margin="0,0,8,0" Padding="12,4"
+                        Click="OpenEditor_Click" Content="키 바인딩 편집 →" Style="{StaticResource PrimaryButton}"/>
+                <Button x:Name="InputToggleButton" DockPanel.Dock="Right" HorizontalAlignment="Right" Margin="0,0,8,0"
+                        Padding="12,4" Click="InputToggle_Click" Content="매핑 시작" Style="{StaticResource PrimaryButton}"/>
+                <Button x:Name="PauseButton" DockPanel.Dock="Right" HorizontalAlignment="Right" Margin="0,0,8,0"
+                        Padding="12,4" Click="PauseButton_Click" Content="일시정지" IsEnabled="False"/>
+            </DockPanel>
+            <DockPanel Grid.Row="1" Margin="0,0,0,8">
+                <TextBlock VerticalAlignment="Center" Margin="0,0,8,0" Text="검색"/>
+                <TextBlock x:Name="ResultCountText" DockPanel.Dock="Right" VerticalAlignment="Center" Margin="10,0,0,0"/>
+                <CheckBox x:Name="ShowAuxiliaryBox" DockPanel.Dock="Right" VerticalAlignment="Center" Margin="10,0,0,0"
+                          Content="보조 창 포함" Checked="ShowAuxiliaryBox_Changed" Unchecked="ShowAuxiliaryBox_Changed"/>
+                <TextBox x:Name="WindowSearchBox" VerticalAlignment="Center" Padding="5,4"
+                         ToolTip="창 제목, 실행 파일 경로, 클래스 또는 PID 검색"
+                         TextChanged="WindowSearchBox_TextChanged"/>
+            </DockPanel>
+            <ListView x:Name="WindowsList" Grid.Row="2" MouseDoubleClick="WindowsList_DoubleClick"
+                      SelectionChanged="WindowsList_SelectionChanged">
+                <ListView.ItemContainerStyle>
+                    <Style TargetType="ListViewItem" BasedOn="{StaticResource {x:Type ListViewItem}}"><Setter Property="ToolTip" Value="{Binding Identity.ExecutablePath}"/></Style>
+                </ListView.ItemContainerStyle>
+                <ListView.View>
+                    <GridView>
+                        <GridViewColumn Header="창 이름" Width="400" DisplayMemberBinding="{Binding DisplayTitle}"/>
+                        <GridViewColumn Header="애플리케이션" Width="230" DisplayMemberBinding="{Binding DisplayProcessName}"/>
+                        <GridViewColumn Header="화면 크기" Width="145" DisplayMemberBinding="{Binding ClientSize}"/>
+                        <GridViewColumn Header="상태" Width="110" DisplayMemberBinding="{Binding DisplayState}"/>
+                    </GridView>
+                </ListView.View>
+            </ListView>
+        </Grid>
+        </Border>
+    </Grid>
+</Window>

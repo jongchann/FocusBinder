@@ -1,0 +1,13 @@
+.dotnet/
+.dotnet-home/
+.appdata/
+**/bin/
+**/obj/
+*.user
+*.tmp
+.packages/
+.qa-build/
+dotnet-install.ps1
+design-preview/
+NVIDIA Corporation/
+.vs/
