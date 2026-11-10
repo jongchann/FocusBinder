@@ -38,7 +38,7 @@ if ((Get-Content -Raw $checksums).Trim() -ne "$hash  $archiveName") { throw 'Ass
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $zip = [IO.Compression.ZipFile]::OpenRead($archive)
 try {
-    $entry = $zip.Entries | Where-Object { $_.FullName -eq "FocusBind-$Version-win-x64/release.json" } | Select-Object -First 1
+    $entry = $zip.Entries | Where-Object { $_.FullName.Replace('\', '/') -eq "FocusBind-$Version-win-x64/release.json" } | Select-Object -First 1
     if (!$entry) { throw 'Release manifest missing from ZIP.' }
     $reader = New-Object IO.StreamReader($entry.Open())
     try { $manifest = $reader.ReadToEnd() | ConvertFrom-Json } finally { $reader.Dispose() }

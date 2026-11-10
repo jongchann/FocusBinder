@@ -62,7 +62,15 @@ if ($LASTEXITCODE -ne 0) { throw 'Cannot determine source commit.' }
 $manifest = [ordered]@{ Version = $Version; SourceCommit = $sourceCommit; Runtime = 'win-x64'; SelfContained = $true; BuiltUtc = [DateTime]::UtcNow.ToString('o') }
 $manifest | ConvertTo-Json | Set-Content -Encoding UTF8 (Join-Path $package 'release.json')
 Add-Type -AssemblyName System.IO.Compression.FileSystem
-[IO.Compression.ZipFile]::CreateFromDirectory($packageParent, $archive, [IO.Compression.CompressionLevel]::Optimal, $false)
+$zipStream = [IO.File]::Open($archive, [IO.FileMode]::CreateNew)
+$zipArchive = New-Object IO.Compression.ZipArchive($zipStream, [IO.Compression.ZipArchiveMode]::Create, $false)
+try {
+    foreach ($file in Get-ChildItem -LiteralPath $package -Recurse -File | Sort-Object FullName) {
+        $entryName = $file.FullName.Substring($packageParent.Length + 1).Replace('\', '/')
+        [IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zipArchive, $file.FullName, $entryName, [IO.Compression.CompressionLevel]::Optimal) | Out-Null
+    }
+}
+finally { $zipArchive.Dispose(); $zipStream.Dispose() }
 $extracted = Join-Path $work 'extracted'
 [IO.Compression.ZipFile]::ExtractToDirectory($archive, $extracted)
 $extractedPackage = Join-Path $extracted $name
