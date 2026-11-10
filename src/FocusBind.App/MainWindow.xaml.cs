@@ -1,0 +1,591 @@
+using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Data;
+using System.IO;
+using System.Diagnostics;
+using System.Windows.Threading;
+using System.Windows.Interop;
+using FocusBind.Win32;
+using FocusBind.Win32.Input;
+using FocusBind.Core.Input;
+using FocusBind.Core.Profiles;
+using FocusBind.Core.Coordinates;
+using FocusBind.Core.Overlay;
+
+namespace FocusBind.App;
+
+public partial class MainWindow : Window
+{
+    private readonly ForegroundWatcher _watcher;
+    private readonly int? _ownIntegrityRid = ProcessIntegrityInspector.TryGetRid((uint)Environment.ProcessId);
+    private InputRuntime? _runtime;
+    private RawKeyboardInputSink? _rawKeyboard;
+    private string? _rawKeyboardError;
+    private GlobalShortcuts? _shortcuts;
+    private readonly DiagnosticLog _shortcutLog = new(Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "FocusBind",
+        $"shortcuts-{DateTime.Now:yyyyMMdd-HHmmss-fff}.log"));
+    private readonly DiagnosticLoggingSettingsStore _loggingStore = new(Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "FocusBind", "logging.json"));
+    private bool _loggingUiReady;
+    private bool _updatingLoggingUi;
+    private List<ShortcutBinding> _shortcutBindings = GlobalShortcuts.Defaults();
+    private bool _startingRuntime;
+    private int _openEditors;
+    private bool _transferringProfiles;
+    private readonly DispatcherTimer _runtimeStatusTimer;
+    private readonly DispatcherTimer _overlayTimer;
+    private readonly ShortcutOverlaySettingsStore _overlayStore = new(Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "FocusBind", "overlay.json"));
+    private ShortcutOverlaySettings _overlaySettings = new();
+    private ShortcutOverlayWindow? _overlayWindow;
+    private ProfileDocument? _runtimeDocument;
+    private ProfileDocument? _overlayDocument;
+    private CoordinateContextManager? _overlayCoordinates;
+    private CoordinateContext? _lastOverlayContext;
+    private Guid _overlayProfileId;
+    private nint _overlayTarget;
+    private bool _overlayFaulted;
+    private bool _closing;
+    private string? _overlayError;
+    private readonly ProfileStore _store = new(Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "FocusBind", "profiles.json"));
+
+    public MainWindow()
+    {
+        InitializeComponent();
+        InitializeLoggingPreferences();
+        SourceInitialized += (_, _) => InitializeShortcuts();
+        _watcher = new ForegroundWatcher();
+        _watcher.Changed += OnWindowChanged;
+        _runtimeStatusTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(500) };
+        _runtimeStatusTimer.Tick += (_, _) => RefreshRuntimeStatus();
+        _runtimeStatusTimer.Start();
+        _overlayTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(150) };
+        _overlayTimer.Tick += (_, _) => RefreshShortcutOverlay();
+        _overlayTimer.Start();
+        Activated += (_, _) => RefreshWindows();
+        Closed += (_, _) =>
+        {
+            _closing = true; _overlayTimer.Stop(); _overlayWindow?.Close(); _overlayWindow = null;
+            _shortcuts?.Dispose(); _shortcutLog.Dispose(); _runtimeStatusTimer.Stop(); _rawKeyboard?.Dispose(); _runtime?.Dispose(); _watcher.Dispose();
+        };
+        ShowSnapshot(WindowInspector.GetForeground(), "현재 포커스");
+        RefreshWindows();
+        try { _overlaySettings = _overlayStore.Load(); }
+        catch (Exception ex) { _overlayError = $"오버레이 설정 읽기 실패: {ex.Message}"; }
+        ShowOverlaySettingsSummary();
+        Loaded += async (_, _) => await ReloadOverlayProfilesAsync();
+    }
+
+    private void OnWindowChanged(WindowChange change)
+    {
+        if (_closing) return;
+        Dispatcher.BeginInvoke(() =>
+        {
+            if (_closing) return;
+            ShowSnapshot(change.Window, change.Kind == WindowChangeKind.Foreground ? "포커스 변경" : "위치·크기 변경");
+            RefreshShortcutOverlay();
+        });
+    }
+
+    private void InitializeLoggingPreferences()
+    {
+        string? error = null;
+        var enabled = false;
+        try { enabled = _loggingStore.Load().Enabled; }
+        catch (Exception ex) { error = $"로그 설정 읽기 실패 · 기본 꺼짐 적용: {ex.Message}"; }
+        DiagnosticLog.Configure(enabled);
+        DiagnosticLoggingBox.IsChecked = enabled;
+        _loggingUiReady = true;
+        UpdateLoggingUi();
+        if (error is not null) LoggingStatusText.Text = error;
+    }
+
+    private void DiagnosticLogging_Changed(object sender, RoutedEventArgs e)
+    {
+        if (!_loggingUiReady || _updatingLoggingUi) return;
+        try
+        {
+            var enabled = DiagnosticLoggingBox.IsChecked == true;
+            // Disabling must take effect even if saving the preference fails (for example, on a full disk).
+            if (!enabled) DiagnosticLog.Configure(false);
+            _loggingStore.Save(new DiagnosticLoggingSettings { Enabled = enabled });
+            DiagnosticLog.Configure(enabled);
+            UpdateLoggingUi();
+        }
+        catch (Exception ex)
+        {
+            _updatingLoggingUi = true; DiagnosticLoggingBox.IsChecked = DiagnosticLog.IsEnabled; _updatingLoggingUi = false;
+            UpdateLoggingUi();
+            LoggingStatusText.Text = $"로그 설정 저장 실패 (현재 기록: {(DiagnosticLog.IsEnabled ? "켜짐" : "꺼짐")}): {ex.Message}";
+        }
+    }
+
+    private void UpdateLoggingUi()
+    {
+        var enabled = DiagnosticLog.IsEnabled;
+        LoggingStatusText.Text = enabled ? "로그 기록: 켜짐 · 해제하면 현재 파일 기록이 중단됩니다." : "로그 기록: 꺼짐 · 로그 파일을 생성하거나 기록하지 않습니다.";
+        var paths = new List<string>();
+        if (_runtime?.DiagnosticLogPath is { } runtimePath) paths.Add($"입력 로그: {runtimePath}");
+        if (_shortcutLog.Path is { } shortcutPath) paths.Add($"단축키 로그: {shortcutPath}");
+        DiagnosticPathBox.Text = enabled ? string.Join(Environment.NewLine, paths) : "";
+        DiagnosticPathBox.Visibility = enabled && paths.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+        ShortcutStatusText.ToolTip = enabled && _shortcutLog.Path is { } path ? $"단축키 진단 로그: {path}" : "단축키 진단 로그: 꺼짐";
+    }
+
+    private void OverlaySettings_Click(object sender, RoutedEventArgs e)
+    {
+        new OverlaySettingsWindow(_overlaySettings, settings =>
+        {
+            _overlayStore.Save(settings);
+            _overlaySettings = settings; _overlayFaulted = false; _overlayError = null;
+            _lastOverlayContext = null;
+            ShowOverlaySettingsSummary(); RefreshShortcutOverlay();
+            _ = ReloadOverlayProfilesAsync();
+        }, WindowInspector.ListTopLevelWindows()) { Owner = this }.ShowDialog();
+    }
+
+    private async Task ReloadOverlayProfilesAsync()
+    {
+        try
+        {
+            var document = await _store.LoadAsync();
+            if (_closing) return;
+            _overlayDocument = document;
+            HideShortcutOverlay(true); RefreshShortcutOverlay();
+        }
+        catch (Exception ex)
+        {
+            if (_closing) return;
+            _overlayDocument = null; HideShortcutOverlay(true);
+            _overlayError = $"오버레이 프로필 읽기 실패: {ex.Message}"; ShowOverlaySettingsSummary();
+        }
+    }
+
+    private async Task ToggleOverlayAsync()
+    {
+        try
+        {
+            if (_overlaySettings.TargetProcess is null)
+                throw new InvalidOperationException("오버레이 설정에서 대상 프로세스를 먼저 선택하세요.");
+            var settings = new ShortcutOverlaySettings { Enabled = !_overlaySettings.Enabled,
+                TransparencyPercent = _overlaySettings.TransparencyPercent, TargetProcess = _overlaySettings.TargetProcess };
+            _overlayStore.Save(settings);
+            _overlaySettings = settings; _overlayFaulted = false; _overlayError = null;
+            _lastOverlayContext = null; ShowOverlaySettingsSummary(); RefreshShortcutOverlay();
+            if (settings.Enabled) await ReloadOverlayProfilesAsync();
+        }
+        catch (Exception ex)
+        { _overlayError = $"오버레이 전환 실패: {ex.Message}"; ShowOverlaySettingsSummary(); RuntimeStatusText.Text = _overlayError; }
+    }
+
+    private void ShowOverlaySettingsSummary()
+    {
+        OverlaySettingsButton.Content = _overlayFaulted ? "오버레이 오류 · 설정" : _overlaySettings.Enabled
+            ? $"오버레이: 켜짐 · 투명도 {_overlaySettings.TransparencyPercent}%" : "오버레이: 꺼짐";
+        OverlaySettingsButton.ToolTip = _overlayError ?? $"대상: {_overlaySettings.TargetProcess?.ExecutableName ?? "미선택"} · 프로세스와 투명도 설정";
+    }
+
+    private void HideShortcutOverlay(bool reset = false)
+    {
+        if (_overlayWindow?.IsVisible == true) _overlayWindow.Hide();
+        _lastOverlayContext = null;
+        if (reset) { _overlayCoordinates = null; _overlayTarget = 0; _overlayProfileId = Guid.Empty; }
+    }
+
+    private void RefreshShortcutOverlay()
+    {
+        if (_closing || _overlayFaulted) return;
+        try
+        {
+            var document = _runtimeDocument ?? _overlayDocument;
+            if (_openEditors > 0 || _transferringProfiles || !_overlaySettings.Enabled || _overlaySettings.TransparencyPercent == 100 ||
+                document is null || _overlaySettings.TargetProcess is null)
+            { HideShortcutOverlay(true); return; }
+            var target = WindowInspector.GetForeground();
+            if (target is not { CanReceiveInput: true } || target.ProcessId == Environment.ProcessId)
+            { HideShortcutOverlay(true); return; }
+            var matches = _overlaySettings.TargetProcess.Matches(target.Identity);
+            var profile = matches ? ProfileResolver.Resolve(document, target.Identity) : null;
+            if (!ShortcutOverlayLayout.ShouldShow(_overlaySettings, target.CanReceiveInput, matches, profile is not null))
+            { HideShortcutOverlay(true); return; }
+            if (profile is null) return;
+            if (_overlayTarget != target.Handle || _overlayProfileId != profile.Id)
+            {
+                _overlayTarget = target.Handle; _overlayProfileId = profile.Id;
+                _overlayCoordinates = new CoordinateContextManager(profile); _lastOverlayContext = null;
+            }
+            var bounds = target.ClientBounds;
+            _overlayCoordinates!.Update(new PixelRect(bounds.X, bounds.Y, bounds.Width, bounds.Height),
+                target.Dpi, true, Environment.TickCount64);
+            if (!_overlayCoordinates.TryGet(Environment.TickCount64, out var context) || context is null)
+            { HideShortcutOverlay(); return; }
+            if (ReferenceEquals(context, _lastOverlayContext) && _overlayWindow?.MatchesBounds(context.Client) == true) return;
+            var hints = ShortcutOverlayLayout.Build(profile, context);
+            if (hints.Count == 0) { HideShortcutOverlay(); return; }
+            _overlayWindow ??= new ShortcutOverlayWindow();
+            _overlayWindow.Present(profile.Name, context, hints, _overlaySettings.Opacity);
+            _lastOverlayContext = context;
+        }
+        catch (Exception ex)
+        {
+            try { HideShortcutOverlay(true); _overlayWindow?.Close(); }
+            catch { /* Overlay cleanup must not interrupt the input runtime. */ }
+            _overlayWindow = null;
+            _overlayFaulted = true; _overlayError = $"오버레이 표시 실패: {ex.Message}";
+            ShowOverlaySettingsSummary();
+        }
+    }
+
+    private void ShowSnapshot(WindowSnapshot? window, string reason)
+    {
+        EventText.Text = reason;
+        if (window is null)
+        {
+            TitleText.Text = "활성 창 없음";
+            ProcessText.Text = ClassText.Text = BoundsText.Text = DpiText.Text = string.Empty;
+            return;
+        }
+        TitleText.Text = $"제목: {window.DisplayTitle}";
+        ProcessText.Text = string.IsNullOrWhiteSpace(window.Identity.ExecutablePath)
+            ? $"실행 파일 경로 접근 불가 · 프로세스: {window.DisplayProcessName} (PID {window.ProcessId})"
+            : $"실행 파일: {window.Identity.ExecutablePath} (PID {window.ProcessId})";
+        ClassText.Text = $"클래스: {window.Identity.WindowClass}";
+        BoundsText.Text = $"클라이언트: {window.ClientBounds.X}, {window.ClientBounds.Y} / {window.ClientBounds.Width}×{window.ClientBounds.Height}";
+        DpiText.Text = $"DPI: {window.Dpi} · 표시: {window.IsVisible} · 최소화: {window.IsMinimized} · 입력 가능: {window.CanReceiveInput}";
+        if (window.ProcessId != Environment.ProcessId) ShowElevationWarning(window);
+    }
+
+    private void ShowElevationWarning(WindowSnapshot window)
+    {
+        var targetRid = ProcessIntegrityInspector.TryGetRid(window.ProcessId);
+        ElevationPanel.Visibility = targetRid > _ownIntegrityRid ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    private void WindowsList_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (WindowsList?.SelectedItem is WindowSnapshot selected)
+        {
+            ShowElevationWarning(selected);
+        }
+    }
+
+    private void InitializeShortcuts()
+    {
+        _shortcuts = new GlobalShortcuts(HwndSource.FromHwnd(new WindowInteropHelper(this).Handle)!);
+        _shortcuts.Invoked += HandleShortcut;
+        UpdateLoggingUi();
+        try { _shortcutBindings = GlobalShortcuts.Load(); _shortcuts.Apply(_shortcutBindings); ShowShortcutSummary(); _shortcutLog.Write($"shortcuts registered count={_shortcutBindings.Count}"); }
+        catch (Exception ex) { _shortcutLog.Write($"registration failed {ex}"); ShortcutStatusText.Text = $"단축키 설정/등록 실패: {ex.Message}"; }
+    }
+
+    private void ShowShortcutSummary()
+    {
+        ShortcutSummaryText.Text = string.Join(Environment.NewLine, _shortcutBindings.Select(b =>
+            $"{ShortcutSettingsWindow.Label(b.Action)}   {KeyNames.Format(b.KeyCode, b.Modifiers)}"));
+        ShortcutStatusText.Text = string.Empty;
+    }
+
+    private void ShortcutSettings_Click(object sender, RoutedEventArgs e)
+    {
+        if (_shortcuts is null) return;
+        _shortcuts.Clear();
+        try
+        {
+            var dialog = new ShortcutSettingsWindow(_shortcutBindings, bindings =>
+            {
+                try
+                {
+                    _shortcuts.Apply(bindings);
+                    GlobalShortcuts.Save(bindings);
+                    _shortcutBindings = bindings;
+                }
+                catch
+                {
+                    _shortcuts.Clear(); // Keep recording available while the dialog remains open.
+                    throw;
+                }
+            }) { Owner = this };
+            if (dialog.ShowDialog() != true) _shortcuts.Apply(_shortcutBindings);
+            ShowShortcutSummary();
+        }
+        catch (Exception ex)
+        {
+            try { _shortcuts.Apply(_shortcutBindings); }
+            catch (Exception restore) { ShortcutStatusText.Text = $"단축키 복원 실패: {restore.Message}"; return; }
+            ShortcutStatusText.Text = $"단축키 적용 실패(이전 설정 유지): {ex.Message}";
+        }
+    }
+
+    private void HandleShortcut(ShortcutAction action)
+    {
+        _shortcutLog.Write($"shortcut received action={action}");
+        if (action == ShortcutAction.OverlayToggle) { _ = ToggleOverlayAsync(); return; }
+        if (action == ShortcutAction.MappingToggle) { InputToggle_Click(this, new RoutedEventArgs()); return; }
+        try
+        {
+            var target = WindowInspector.GetForeground();
+            if (target is null)
+                throw new InvalidOperationException("현재 포커스된 앱을 확인할 수 없습니다.");
+            AudioTargetText.Text = $"최근 소리 조절 대상: {target.DisplayProcessName} · PID {target.ProcessId}";
+            _shortcutLog.Write($"audio target pid={target.ProcessId} class={target.Identity.WindowClass}");
+            var count = ProcessAudio.Adjust(target.ProcessId, action == ShortcutAction.VolumeUp ? 0.05f : -0.05f,
+                null, toggleMute: action == ShortcutAction.MuteToggle, trace: _shortcutLog.Write);
+            _shortcutLog.Write($"audio completed matchedSessions={count}");
+            ShortcutStatusText.Text = count == 0 ? "대상 앱의 오디오 세션이 없습니다. 앱에서 소리를 재생한 후 다시 시도하세요." :
+                $"{target.DisplayProcessName}: {ShortcutSettingsWindow.Label(action)} · {count}개 오디오 세션 적용";
+        }
+        catch (Exception ex)
+        {
+            _shortcutLog.Write($"audio failed hresult=0x{ex.HResult:X8} {ex}");
+            ShortcutStatusText.Text = $"소리 조절 실패: {ex.Message}" + (_shortcutLog.Path is { } logPath ? $" · 로그: {logPath}" : "");
+        }
+    }
+
+    private void RestartElevated_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            var executable = Environment.ProcessPath ?? throw new InvalidOperationException("실행 파일 경로를 찾지 못했습니다.");
+            var start = new ProcessStartInfo(executable) { UseShellExecute = true, Verb = "runas" };
+            if (Path.GetFileNameWithoutExtension(executable).Equals("dotnet", StringComparison.OrdinalIgnoreCase))
+                start.ArgumentList.Add(System.Reflection.Assembly.GetEntryAssembly()?.Location
+                    ?? throw new InvalidOperationException("앱 DLL 경로를 찾지 못했습니다."));
+            var process = Process.Start(start);
+            if (process is null) throw new InvalidOperationException("관리자 권한으로 실행하지 못했습니다.");
+            Close();
+        }
+        catch (Exception ex) { RuntimeStatusText.Text = $"관리자 권한 재시작 취소/실패: {ex.Message}"; }
+    }
+
+    private void RefreshWindows_Click(object sender, RoutedEventArgs e) => RefreshWindows();
+    private void Minimize_Click(object sender, RoutedEventArgs e) => WindowState = WindowState.Minimized;
+    private void OpenEditor_Click(object sender, RoutedEventArgs e)
+    {
+        if (_transferringProfiles) return;
+        if (_runtime is not null) StopRuntime("편집 중에는 매핑을 중지합니다. 저장 후 다시 시작하세요.");
+        if (WindowsList.SelectedItem is not WindowSnapshot selected)
+        {
+            MessageBox.Show(this, "먼저 목록에서 대상 창을 선택하세요.", "FocusBind");
+            return;
+        }
+        var current = WindowInspector.TryGet(selected.Handle);
+        if (current is null)
+        {
+            MessageBox.Show(this, "선택한 창이 종료되었습니다. 목록을 새로고침하세요.", "FocusBind");
+            return;
+        }
+        var editor = new BindingEditorWindow(current) { Owner = this };
+        _openEditors++;
+        HideShortcutOverlay(true);
+        editor.Closed += async (_, _) => { _openEditors--; if (_openEditors == 0) await ReloadOverlayProfilesAsync(); };
+        editor.Show();
+    }
+
+    private async void InputToggle_Click(object sender, RoutedEventArgs e)
+    {
+        if (_startingRuntime || _transferringProfiles) return;
+        if (_runtime is not null)
+        {
+            StopRuntime("입력 매핑: 중지됨");
+            return;
+        }
+        if (_openEditors > 0) { RuntimeStatusText.Text = "키 바인딩 편집기를 닫은 뒤 매핑을 시작하세요."; return; }
+        _startingRuntime = true;
+        try
+        {
+            var document = await _store.LoadAsync();
+            if (document.Profiles.Count == 0 || !document.Profiles.Any(p => p.Mappings.Any(m =>
+                m.Enabled && m.Actions.Steps.Count > 0 && InputActionRunner.Supports(m.Actions, true))))
+            {
+                RuntimeStatusText.Text = "저장된 활성 매핑이 없습니다. 대상 창을 선택해 편집하세요.";
+                return;
+            }
+            _runtime = new InputRuntime(document);
+            _runtimeDocument = document;
+            _overlayDocument = document;
+            HideShortcutOverlay(true);
+            try
+            {
+                _rawKeyboard = new RawKeyboardInputSink(this);
+                _rawKeyboard.KeyboardInput += _runtime.HandleRawKeyboard;
+                _rawKeyboard.Tick += _runtime.PollRawKeyboard;
+                _runtime.EnableRawKeyboard();
+                _rawKeyboardError = null;
+            }
+            catch (Exception ex) { _rawKeyboardError = ex.Message; }
+            UpdateLoggingUi();
+            InputToggleButton.Content = "매핑 중지";
+            PauseButton.IsEnabled = true;
+            PauseButton.Content = _runtime.IsPaused ? "재개" : "일시정지";
+            RuntimeStatusText.Text = _runtime.IsPaused ? "입력 매핑: 일시정지" :
+                "입력 매핑: 활성화 · 포커스된 대상 창에서만 실행";
+            RefreshShortcutOverlay();
+        }
+        catch (Exception ex) { RuntimeStatusText.Text = $"매핑 시작 실패: {ex.Message}"; }
+        finally { _startingRuntime = false; }
+    }
+
+    private void StopRuntime(string status)
+    {
+        _runtimeDocument = null;
+        _rawKeyboard?.Dispose();
+        _rawKeyboard = null;
+        _runtime?.Dispose();
+        _runtime = null;
+        UpdateLoggingUi();
+        InputToggleButton.Content = "매핑 시작";
+        PauseButton.IsEnabled = false;
+        PauseButton.Content = "일시정지";
+        RuntimeStatusText.Text = status;
+        RefreshShortcutOverlay();
+    }
+
+    private void PauseButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (_runtime is null) return;
+        if (_runtime.IsPaused) _runtime.Resume();
+        else _runtime.Pause();
+        PauseButton.Content = _runtime.IsPaused ? "재개" : "일시정지";
+        RuntimeStatusText.Text = _runtime.IsPaused ? "입력 매핑: 일시정지" :
+            "입력 매핑: 활성화 · 포커스된 대상 창에서만 실행";
+        RefreshShortcutOverlay();
+    }
+
+    private void RefreshRuntimeStatus()
+    {
+        var runtime = _runtime;
+        if (runtime is null) return;
+        if (runtime.IsPaused) { RuntimeStatusText.Text = "입력 매핑: 일시정지"; return; }
+        var target = runtime.ActiveProfileName;
+        var status = target is null ? "입력 매핑: 활성화 · 현재 창에 일치하는 프로필 없음" :
+            $"입력 매핑: {target}";
+        status += $" · 훅 입력 {runtime.ObservedInputs} · Raw 키 {runtime.RawKeyboardInputs} · 후보 입력 {runtime.CandidateInputs} · 트리거 {runtime.MatchedTriggers} · 실행 {runtime.StartedRuns} · 완료 {runtime.CompletedRuns}";
+        status += $"\n훅 스레드: {(runtime.HookThreadAlive ? "실행 중" : "종료됨")} · 타이머 {runtime.HookTimerTicks} · 콜백 {runtime.HookCallbacks}";
+        status += $" (키보드 {runtime.KeyboardCallbacks}, 마우스 {runtime.MouseCallbacks})";
+        if (runtime.LastExternalWindowDiagnostic is { } diagnostic) status += $"\n{diagnostic}";
+        if (runtime.HookError is { } hookError) status += $" · 훅 오류: {hookError}";
+        if (runtime.DiagnosticLogError is { } logError) status += $" · 로그 오류: {logError}";
+        if (_rawKeyboardError is { } rawError) status += $" · Raw 입력 오류: {rawError}";
+        if (_rawKeyboard?.LastError is { } rawFailure) status += $" · Raw 입력 오류: {rawFailure.Message}";
+        if (runtime.LastError is { } error) status += $" · 오류: {error.Message}";
+        else if (runtime.LastCancellationReason is { } reason && runtime.StartedRuns > runtime.CompletedRuns)
+            status += $" · 마지막 중단: {reason}";
+        RuntimeStatusText.Text = status;
+    }
+    private void RefreshWindows()
+    {
+        var selectedHandle = (WindowsList.SelectedItem as WindowSnapshot)?.Handle;
+        WindowsList.ItemsSource = WindowInspector.ListTopLevelWindows();
+        ApplySearch();
+        if (selectedHandle is not null)
+            WindowsList.SelectedItem = WindowsList.Items.Cast<WindowSnapshot>()
+                .FirstOrDefault(window => window.Handle == selectedHandle);
+    }
+
+    private void WindowSearchBox_TextChanged(object sender, TextChangedEventArgs e) => ApplySearch();
+    private void ShowAuxiliaryBox_Changed(object sender, RoutedEventArgs e) => ApplySearch();
+
+    private void ApplySearch()
+    {
+        if (WindowsList is null || WindowSearchBox is null || WindowsList.ItemsSource is null) return;
+        var terms = WindowSearchBox.Text.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var view = CollectionViewSource.GetDefaultView(WindowsList.ItemsSource);
+        view.Filter = item => item is WindowSnapshot window &&
+            (ShowAuxiliaryBox.IsChecked == true || !window.IsAuxiliary || window.IsMinimized)
+            && terms.All(term =>
+            window.DisplayTitle.Contains(term, StringComparison.OrdinalIgnoreCase) ||
+            window.Identity.ExecutablePath.Contains(term, StringComparison.OrdinalIgnoreCase) ||
+            window.Identity.WindowClass.Contains(term, StringComparison.OrdinalIgnoreCase) ||
+            window.ProcessId.ToString().Contains(term, StringComparison.OrdinalIgnoreCase));
+        view.Refresh();
+        ResultCountText.Text = $"{WindowsList.Items.Count}개 / 전체 {TotalWindowCount()}개";
+    }
+
+    private int TotalWindowCount() => (WindowsList.ItemsSource as IReadOnlyList<WindowSnapshot>)?.Count ?? 0;
+
+    private async void ExportProfiles_Click(object sender, RoutedEventArgs e)
+    {
+        if (_transferringProfiles || _startingRuntime) return;
+        if (_openEditors > 0) { RuntimeStatusText.Text = "편집 내용을 저장하고 편집기를 닫은 뒤 내보내세요."; return; }
+        var dialog = new Microsoft.Win32.SaveFileDialog
+        {
+            Title = "저장된 전체 프로필 내보내기", Filter = "FocusBind JSON (*.json)|*.json",
+            FileName = $"FocusBind-profiles-{DateTime.Now:yyyyMMdd}.json", DefaultExt = ".json"
+        };
+        if (dialog.ShowDialog(this) != true) return;
+        _transferringProfiles = true;
+        try
+        {
+            if (string.Equals(Path.GetFullPath(dialog.FileName), _store.Path, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("현재 설정 파일과 다른 내보내기 경로를 선택하세요.");
+            var document = await _store.LoadAsync();
+            await new ProfileStore(dialog.FileName).SaveAsync(document);
+            RuntimeStatusText.Text = $"프로필 {document.Profiles.Count}개 내보내기 완료: {dialog.FileName}";
+        }
+        catch (Exception ex) { RuntimeStatusText.Text = $"내보내기 실패: {ex.Message}"; }
+        finally { _transferringProfiles = false; }
+    }
+
+    private async void ImportProfiles_Click(object sender, RoutedEventArgs e)
+    {
+        if (_transferringProfiles || _startingRuntime) return;
+        if (_openEditors > 0) { RuntimeStatusText.Text = "편집 내용을 저장하고 편집기를 닫은 뒤 가져오세요."; return; }
+        var dialog = new Microsoft.Win32.OpenFileDialog { Title = "프로필 가져오기", Filter = "FocusBind JSON (*.json)|*.json", CheckFileExists = true };
+        if (dialog.ShowDialog(this) != true) return;
+        _transferringProfiles = true;
+        try
+        {
+            if (string.Equals(Path.GetFullPath(dialog.FileName), _store.Path, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("현재 설정 파일과 다른 가져오기 파일을 선택하세요.");
+            if (!File.Exists(dialog.FileName)) throw new FileNotFoundException("가져올 파일을 찾을 수 없습니다.");
+            var imported = await new ProfileStore(dialog.FileName).LoadAsync();
+            if (imported.Profiles.Count == 0) throw new InvalidOperationException("가져올 프로필이 없습니다.");
+            ProfileDocument result;
+            try
+            {
+                var current = await _store.LoadAsync();
+                Dictionary<Guid, ProfileImportChoice>? choices = null;
+                if (imported.Profiles.Any(p => ProfileTransfer.Conflicts(current, p).Count > 0))
+                {
+                    var conflicts = new ProfileImportWindow(current, imported) { Owner = this };
+                    if (conflicts.ShowDialog() != true) return;
+                    choices = conflicts.Choices;
+                }
+                if (choices is not null && imported.Profiles.All(p => choices.TryGetValue(p.Id, out var choice) && choice.Mode == ProfileImportMode.Skip))
+                {
+                    RuntimeStatusText.Text = "모든 프로파일을 건너뛰었습니다. 기존 설정을 유지합니다.";
+                    return;
+                }
+                result = ProfileTransfer.Merge(current, imported, choices);
+            }
+            catch (Exception ex) when (ex is ProfileValidationException or System.Text.Json.JsonException)
+            {
+                if (MessageBox.Show(this,
+                    "현재 설정 파일이 손상되어 읽을 수 없습니다. 현재 파일을 백업하고 선택한 파일로 복구할까요?\n\n" + ex.Message,
+                    "프로필 복구", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
+                result = imported;
+            }
+            string? backup = null;
+            if (File.Exists(_store.Path))
+            {
+                backup = _store.Path + $".backup-{DateTime.Now:yyyyMMdd-HHmmss}-{Guid.NewGuid():N}.json";
+                File.Copy(_store.Path, backup, false);
+            }
+            if (_runtime is not null) StopRuntime("프로필을 가져오는 동안 매핑을 중지합니다.");
+            await _store.SaveAsync(result);
+            _overlayDocument = result;
+            RuntimeStatusText.Text = "프로필 가져오기 완료 (선택한 병합·복사·건너뛰기 적용) · 매핑은 다시 시작하세요." +
+                (backup is null ? "" : $"\n이전 설정 백업: {backup}");
+        }
+        catch (Exception ex) { RuntimeStatusText.Text = $"가져오기 실패 (기존 설정 유지): {ex.Message}"; }
+        finally { _transferringProfiles = false; }
+    }
+
+    private void WindowsList_DoubleClick(object sender, System.Windows.Input.MouseButtonEventArgs e)
+    {
+        if (WindowsList.SelectedItem is WindowSnapshot selected)
+            ShowSnapshot(WindowInspector.TryGet(selected.Handle), "선택한 창");
+    }
+}

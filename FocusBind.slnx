@@ -1,0 +1,10 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/FocusBind.App/FocusBind.App.csproj" />
+    <Project Path="src/FocusBind.Core/FocusBind.Core.csproj" />
+    <Project Path="src/FocusBind.Win32/FocusBind.Win32.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/FocusBind.Tests/FocusBind.Tests.csproj" />
+  </Folder>
+</Solution>
