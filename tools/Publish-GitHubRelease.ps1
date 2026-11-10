@@ -1,6 +1,6 @@
 param(
-    [string]$Version = '0.1.0-preview.1',
-    [string]$AssetDirectory = 'artifacts/releases',
+    [string]$Version = '0.1.0-preview.2',
+    [string]$AssetDirectory = "artifacts/releases/$Version",
     [string]$Repository = 'jongchann/FocusBinder',
     [switch]$CheckOnly
 )
@@ -68,7 +68,7 @@ function Send-Json([string]$Method, [string]$Uri, $Value) {
 $body = [IO.File]::ReadAllText((Join-Path $root "docs/releases/v$Version.md"))
 $release = $existing
 if (!$release) {
-    $release = Send-Json 'Post' "$api/releases" @{ tag_name = $tag; target_commitish = $commit; name = "FocusBind $Version - First Preview";
+    $release = Send-Json 'Post' "$api/releases" @{ tag_name = $tag; target_commitish = $commit; name = "FocusBind $Version";
         body = $body; draft = $true; prerelease = $true; make_latest = 'false' }
 }
 elseif ($release.target_commitish -ne $commit) { throw 'Existing draft targets another commit.' }

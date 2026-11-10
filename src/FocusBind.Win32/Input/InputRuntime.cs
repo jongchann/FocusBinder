@@ -71,7 +71,7 @@ public sealed class InputRuntime : IDisposable
     public long StartedRuns => Interlocked.Read(ref _startedRuns);
     public long CompletedRuns => Interlocked.Read(ref _completedRuns);
     public string? LastCancellationReason { get; private set; }
-    public string DiagnosticLogPath => _diagnostics.Path;
+    public string? DiagnosticLogPath => _diagnostics.Path;
     public string? DiagnosticLogError => _diagnostics.LastError?.Message;
 
     public void EnableRawKeyboard()

@@ -1,6 +1,6 @@
 param(
-    [string]$Version = '0.1.0-preview.1',
-    [string]$OutputDirectory = 'artifacts/releases',
+    [string]$Version = '0.1.0-preview.2',
+    [string]$OutputDirectory = "artifacts/releases/$Version",
     [string]$Dotnet = '.dotnet/dotnet.exe'
 )
 $ErrorActionPreference = 'Stop'

@@ -48,9 +48,6 @@
                     </Border>
                 </Grid>
             </Border>
-            <TextBox x:Name="DiagnosticPathBox" IsReadOnly="True" Visibility="Collapsed" Margin="0,0,0,8"
-                     ToolTip="진단 로그 경로 (선택해 복사 가능)" BorderThickness="0" Background="Transparent"
-                     Foreground="#FF526579" FontSize="11"/>
             <StackPanel x:Name="ElevationPanel" Orientation="Horizontal" Visibility="Collapsed" Margin="0,0,0,10">
                 <TextBlock Text="대상 창의 관리자 권한이 더 높아 입력 감지·주입이 제한될 수 있습니다."
                            Foreground="#FFB03D38" VerticalAlignment="Center" Margin="0,0,10,0"/>
@@ -58,9 +55,15 @@
             </StackPanel>
         </StackPanel>
         <Border Grid.Row="1" Style="{StaticResource Card}" Padding="14" Background="#EDF2F6">
-            <Expander Header="창 정보와 진단" IsExpanded="False">
+            <Expander x:Name="DiagnosticsExpander" Header="창 정보와 진단" IsExpanded="False">
             <ScrollViewer MaxHeight="150" VerticalScrollBarVisibility="Auto">
             <StackPanel>
+                <CheckBox x:Name="DiagnosticLoggingBox" Content="진단 로그 파일 기록 (기본 꺼짐)" Margin="0,0,0,6"
+                          Checked="DiagnosticLogging_Changed" Unchecked="DiagnosticLogging_Changed"/>
+                <TextBlock x:Name="LoggingStatusText" Text="로그 기록: 꺼짐" TextWrapping="Wrap" Margin="0,0,0,8"/>
+                <TextBox x:Name="DiagnosticPathBox" IsReadOnly="True" Visibility="Collapsed" Margin="0,0,0,8" TextWrapping="Wrap"
+                         ToolTip="진단 로그 경로 (선택해 복사 가능)" BorderThickness="0" Background="Transparent"
+                         Foreground="#FF526579" FontSize="11"/>
                 <TextBlock x:Name="EventText" FontWeight="SemiBold" Text="감지 시작 중"/>
                 <TextBlock x:Name="TitleText" Margin="0,8,0,0" TextWrapping="Wrap"/>
                 <TextBlock x:Name="ProcessText" Margin="0,4,0,0" TextWrapping="Wrap"/>

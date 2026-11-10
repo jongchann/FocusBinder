@@ -65,6 +65,10 @@ internal static class Program
         Directory.CreateDirectory(outputDirectory);
         Render(main, Path.Combine(outputDirectory, "main.png"), 1140, 850);
         Render(main, Path.Combine(outputDirectory, "main-small.png"), 1000, 720);
+        if (((CheckBox)main.FindName("DiagnosticLoggingBox")).IsChecked == true) throw new Exception("Logging must default off in the UI.");
+        ((Expander)main.FindName("DiagnosticsExpander")).IsExpanded = true;
+        Render(main, Path.Combine(outputDirectory, "main-logging.png"), 1140, 850);
+        ((Expander)main.FindName("DiagnosticsExpander")).IsExpanded = false;
         var shortcutsType = assembly.GetType("FocusBind.App.GlobalShortcuts")!;
         var bindings = shortcutsType.GetMethod("Defaults", BindingFlags.Static | BindingFlags.NonPublic)!.Invoke(null, null)!;
         var callbackType = typeof(Action<>).MakeGenericType(bindings.GetType());

@@ -45,6 +45,9 @@ if (args.Contains("--probe-hooks"))
 
 var tests = new (string Name, Func<Task> Run)[]
 {
+    ("diagnostic logging defaults off without filesystem writes", LoggingDefaultsOff),
+    ("diagnostic logging toggles existing loggers immediately", LoggingLiveToggle),
+    ("diagnostic logging preference persists", LoggingPreference),
     ("round trip", RoundTrip),
     ("invalid save preserves file", InvalidSave),
     ("invalid schema rejected", InvalidSchema),
@@ -96,10 +99,83 @@ static Task DiagnosticLogRoundTrip()
     var path = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"focusbind-log-{Guid.NewGuid():N}.log");
     try
     {
+        DiagnosticLog.Configure(true);
         using (var log = new DiagnosticLog(path)) log.Write("health callbacks=2");
         Assert(File.Exists(path));
         var lines = File.ReadAllLines(path);
         Assert(lines.Length == 2 && lines[0].Contains("session started") && lines[1].Contains("health callbacks=2"));
+    }
+    finally { DiagnosticLog.Configure(false); if (File.Exists(path)) File.Delete(path); }
+    return Task.CompletedTask;
+}
+
+static Task LoggingDefaultsOff()
+{
+    Assert(!DiagnosticLog.IsEnabled);
+    var directory = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"focusbind-log-off-{Guid.NewGuid():N}");
+    using (var log = new DiagnosticLog(System.IO.Path.Combine(directory, "disabled.log")))
+    {
+        log.Write("must not reach disk");
+        Assert(log.Path is null && !Directory.Exists(directory));
+    }
+    Assert(!Directory.Exists(directory));
+    return Task.CompletedTask;
+}
+
+static async Task LoggingLiveToggle()
+{
+    var directory = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"focusbind-log-toggle-{Guid.NewGuid():N}");
+    try
+    {
+        using var first = new DiagnosticLog(System.IO.Path.Combine(directory, "input.log"));
+        using var second = new DiagnosticLog(System.IO.Path.Combine(directory, "shortcuts.log"));
+        DiagnosticLog.Configure(true);
+        first.Write("before disable"); second.Write("audio enabled");
+        var firstPath = first.Path!; var secondPath = second.Path!;
+        await Until(() => ReadShared(firstPath).Contains("before disable") && ReadShared(secondPath).Contains("audio enabled"));
+        var spam = Task.Run(() => Parallel.For(0, 500, i => first.Write($"queued {i}")));
+        DiagnosticLog.Configure(false);
+        var stoppedLength = new FileInfo(firstPath).Length;
+        await spam;
+        Parallel.For(0, 100, _ => { first.Write("disabled"); second.Write("disabled"); });
+        Assert(first.Path is null && second.Path is null && new FileInfo(firstPath).Length == stoppedLength);
+        using var third = new DiagnosticLog(System.IO.Path.Combine(directory, "future.log"));
+        third.Write("also disabled"); Assert(!File.Exists(System.IO.Path.Combine(directory, "future.log")));
+        DiagnosticLog.Configure(true);
+        Assert(first.Path != firstPath && second.Path != secondPath);
+        first.Write("after reenable"); third.Write("future enabled");
+        await Until(() => ReadShared(first.Path!).Contains("after reenable") && ReadShared(third.Path!).Contains("future enabled"));
+        DiagnosticLog.Configure(false);
+        Assert(!ReadShared(firstPath).Contains("after reenable"));
+    }
+    finally
+    {
+        DiagnosticLog.Configure(false);
+        if (Directory.Exists(directory)) { foreach (var file in Directory.GetFiles(directory)) File.Delete(file); Directory.Delete(directory); }
+    }
+    static string ReadShared(string path)
+    {
+        if (!File.Exists(path)) return "";
+        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+        using var reader = new StreamReader(stream); return reader.ReadToEnd();
+    }
+    static async Task Until(Func<bool> ready)
+    {
+        var limit = System.Diagnostics.Stopwatch.StartNew();
+        while (!ready()) { if (limit.ElapsedMilliseconds > 3000) throw new TimeoutException("Log writer did not respond."); await Task.Delay(10); }
+    }
+}
+
+static Task LoggingPreference()
+{
+    var path = TempPath();
+    try
+    {
+        var store = new DiagnosticLoggingSettingsStore(path);
+        Assert(!store.Load().Enabled && !File.Exists(path));
+        store.Save(new DiagnosticLoggingSettings { Enabled = true }); Assert(store.Load().Enabled);
+        store.Save(new DiagnosticLoggingSettings()); Assert(!store.Load().Enabled);
+        File.WriteAllText(path, "{}"); Assert(!store.Load().Enabled);
     }
     finally { if (File.Exists(path)) File.Delete(path); }
     return Task.CompletedTask;

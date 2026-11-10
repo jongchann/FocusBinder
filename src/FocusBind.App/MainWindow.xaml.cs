@@ -25,6 +25,10 @@ public partial class MainWindow : Window
     private readonly DiagnosticLog _shortcutLog = new(Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "FocusBind",
         $"shortcuts-{DateTime.Now:yyyyMMdd-HHmmss-fff}.log"));
+    private readonly DiagnosticLoggingSettingsStore _loggingStore = new(Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "FocusBind", "logging.json"));
+    private bool _loggingUiReady;
+    private bool _updatingLoggingUi;
     private List<ShortcutBinding> _shortcutBindings = GlobalShortcuts.Defaults();
     private bool _startingRuntime;
     private int _openEditors;
@@ -50,6 +54,7 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        InitializeLoggingPreferences();
         SourceInitialized += (_, _) => InitializeShortcuts();
         _watcher = new ForegroundWatcher();
         _watcher.Changed += OnWindowChanged;
@@ -82,6 +87,48 @@ public partial class MainWindow : Window
             ShowSnapshot(change.Window, change.Kind == WindowChangeKind.Foreground ? "포커스 변경" : "위치·크기 변경");
             RefreshShortcutOverlay();
         });
+    }
+
+    private void InitializeLoggingPreferences()
+    {
+        string? error = null;
+        var enabled = false;
+        try { enabled = _loggingStore.Load().Enabled; }
+        catch (Exception ex) { error = $"로그 설정 읽기 실패 · 기본 꺼짐 적용: {ex.Message}"; }
+        DiagnosticLog.Configure(enabled);
+        DiagnosticLoggingBox.IsChecked = enabled;
+        _loggingUiReady = true;
+        UpdateLoggingUi();
+        if (error is not null) LoggingStatusText.Text = error;
+    }
+
+    private void DiagnosticLogging_Changed(object sender, RoutedEventArgs e)
+    {
+        if (!_loggingUiReady || _updatingLoggingUi) return;
+        try
+        {
+            var enabled = DiagnosticLoggingBox.IsChecked == true;
+            _loggingStore.Save(new DiagnosticLoggingSettings { Enabled = enabled });
+            DiagnosticLog.Configure(enabled);
+            UpdateLoggingUi();
+        }
+        catch (Exception ex)
+        {
+            _updatingLoggingUi = true; DiagnosticLoggingBox.IsChecked = DiagnosticLog.IsEnabled; _updatingLoggingUi = false;
+            LoggingStatusText.Text = $"로그 설정 변경 실패: {ex.Message}";
+        }
+    }
+
+    private void UpdateLoggingUi()
+    {
+        var enabled = DiagnosticLog.IsEnabled;
+        LoggingStatusText.Text = enabled ? "로그 기록: 켜짐 · 해제하면 현재 파일 기록이 중단됩니다." : "로그 기록: 꺼짐 · 로그 파일을 생성하거나 기록하지 않습니다.";
+        var paths = new List<string>();
+        if (_runtime?.DiagnosticLogPath is { } runtimePath) paths.Add($"입력 로그: {runtimePath}");
+        if (_shortcutLog.Path is { } shortcutPath) paths.Add($"단축키 로그: {shortcutPath}");
+        DiagnosticPathBox.Text = enabled ? string.Join(Environment.NewLine, paths) : "";
+        DiagnosticPathBox.Visibility = enabled && paths.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+        ShortcutStatusText.ToolTip = enabled && _shortcutLog.Path is { } path ? $"단축키 진단 로그: {path}" : "단축키 진단 로그: 꺼짐";
     }
 
     private void OverlaySettings_Click(object sender, RoutedEventArgs e)
@@ -225,7 +272,7 @@ public partial class MainWindow : Window
     {
         _shortcuts = new GlobalShortcuts(HwndSource.FromHwnd(new WindowInteropHelper(this).Handle)!);
         _shortcuts.Invoked += HandleShortcut;
-        ShortcutStatusText.ToolTip = $"단축키 진단 로그: {_shortcutLog.Path}";
+        UpdateLoggingUi();
         try { _shortcutBindings = GlobalShortcuts.Load(); _shortcuts.Apply(_shortcutBindings); ShowShortcutSummary(); _shortcutLog.Write($"shortcuts registered count={_shortcutBindings.Count}"); }
         catch (Exception ex) { _shortcutLog.Write($"registration failed {ex}"); ShortcutStatusText.Text = $"단축키 설정/등록 실패: {ex.Message}"; }
     }
@@ -289,7 +336,7 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             _shortcutLog.Write($"audio failed hresult=0x{ex.HResult:X8} {ex}");
-            ShortcutStatusText.Text = $"소리 조절 실패: {ex.Message} · 로그: {_shortcutLog.Path}";
+            ShortcutStatusText.Text = $"소리 조절 실패: {ex.Message}" + (_shortcutLog.Path is { } logPath ? $" · 로그: {logPath}" : "");
         }
     }
 
@@ -365,8 +412,7 @@ public partial class MainWindow : Window
                 _rawKeyboardError = null;
             }
             catch (Exception ex) { _rawKeyboardError = ex.Message; }
-            DiagnosticPathBox.Text = $"진단 로그: {_runtime.DiagnosticLogPath}";
-            DiagnosticPathBox.Visibility = Visibility.Visible;
+            UpdateLoggingUi();
             InputToggleButton.Content = "매핑 중지";
             PauseButton.IsEnabled = true;
             PauseButton.Content = _runtime.IsPaused ? "재개" : "일시정지";
@@ -385,6 +431,7 @@ public partial class MainWindow : Window
         _rawKeyboard = null;
         _runtime?.Dispose();
         _runtime = null;
+        UpdateLoggingUi();
         InputToggleButton.Content = "매핑 시작";
         PauseButton.IsEnabled = false;
         PauseButton.Content = "일시정지";

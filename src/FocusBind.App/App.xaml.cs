@@ -6,6 +6,7 @@ using System.Windows;
 using FocusBind.Core.Coordinates;
 using FocusBind.Core.Profiles;
 using FocusBind.Win32;
+using FocusBind.Win32.Input;
 
 namespace FocusBind.App;
 
@@ -30,6 +31,13 @@ public partial class App : Application
         try
         {
             if (RuntimeInformation.ProcessArchitecture != Architecture.X64) throw new InvalidOperationException("Expected x64 process.");
+            if (DiagnosticLog.IsEnabled) throw new InvalidOperationException("Diagnostic logging must default to off.");
+            var disabledLogPath = Path.Combine(Path.GetDirectoryName(Path.GetFullPath(e.Args[1]))!, $"disabled-{Guid.NewGuid():N}.log");
+            using (var disabledLog = new DiagnosticLog(disabledLogPath))
+            {
+                disabledLog.Write("must not create a file");
+                if (disabledLog.Path is not null || File.Exists(disabledLogPath)) throw new InvalidOperationException("Disabled logger touched the filesystem.");
+            }
             if (!Resources.Contains("PrimaryButton")) throw new InvalidOperationException("Application resources missing.");
             using var icon = GetResourceStream(new Uri("/FocusBind.App;component/Assets/FocusBind.ico", UriKind.Relative))?.Stream
                 ?? throw new InvalidOperationException("Application icon missing.");
