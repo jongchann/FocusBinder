@@ -147,6 +147,13 @@ public sealed class InputRuntime : IDisposable
         if (errors.Count > 0) throw new ProfileValidationException(errors);
         _document = document;
         _diagnostics = new DiagnosticLog();
+        foreach (var profile in document.Profiles)
+        foreach (var mapping in profile.Mappings.Where(m => m.Enabled))
+        {
+            var reason = mapping.Actions.Steps.Count == 0 ? "실행할 액션이 없습니다."
+                : InputActionRunner.GetUnsupportedReason(mapping.Actions, true);
+            if (reason is not null) _diagnostics.Write($"mapping excluded profileId={profile.Id} mappingId={mapping.Id} reason={reason}");
+        }
         _triggerCodes = document.Profiles.SelectMany(profile => profile.Mappings)
             .Where(mapping => mapping.Enabled)
             .Select(mapping => (mapping.Trigger.Kind,

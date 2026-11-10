@@ -120,11 +120,29 @@ public static class ProfileValidator
             errors.Add(path + " long press duration must be 50..60000.");
     }
 
+    public static IReadOnlyList<string> ValidateWindowMatcher(WindowMatcher? matcher)
+    {
+        var errors = new List<string>();
+        CheckMatcher(matcher, "창 조건", errors);
+        return errors;
+    }
+
     private static void CheckMatcher(WindowMatcher? matcher, string path, List<string> errors)
     {
         if (matcher is null) { errors.Add(path + " is required."); return; }
         if (string.IsNullOrWhiteSpace(matcher.ExecutablePath) && string.IsNullOrWhiteSpace(matcher.ExecutableName))
             errors.Add(path + " needs executable path or name.");
+        if (!string.IsNullOrWhiteSpace(matcher.ExecutablePath))
+        {
+            try
+            {
+                _ = System.IO.Path.GetFullPath(matcher.ExecutablePath);
+                if (!System.IO.Path.IsPathFullyQualified(matcher.ExecutablePath))
+                    errors.Add(path + " 실행 파일 경로는 절대 경로여야 합니다.");
+            }
+            catch (Exception ex) when (ex is ArgumentException or NotSupportedException or System.IO.PathTooLongException)
+            { errors.Add(path + " 실행 파일 경로가 올바르지 않습니다."); }
+        }
         if (!string.IsNullOrEmpty(matcher.TitlePattern))
         {
             try { _ = new Regex(matcher.TitlePattern, RegexOptions.IgnoreCase, TimeSpan.FromMilliseconds(100)); }

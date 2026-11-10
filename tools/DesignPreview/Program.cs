@@ -9,6 +9,10 @@ using System.Xml.Linq;
 using System.Windows.Markup;
 using FocusBind.Core.Profiles;
 using FocusBind.Win32;
+using FocusBind.Core.Overlay;
+using FocusBind.Core.Coordinates;
+using System.Windows.Interop;
+using System.Runtime.InteropServices;
 
 internal static class Program
 {
@@ -81,10 +85,214 @@ internal static class Program
         Render(editor, Path.Combine(outputDirectory, "editor.png"), 1360, 820);
         Render(editor, Path.Combine(outputDirectory, "editor-small.png"), 1080, 650);
         VerifyWheelEditor(assembly, outputDirectory);
+        VerifyAdvancedEditors(assembly, outputDirectory);
+        VerifyShortcutOverlay(assembly, outputDirectory);
         editor.Close(); main.Close(); app.Shutdown();
         Console.WriteLine("Rendered main, editor, and global shortcut settings.");
     }
     private static void IgnoreBindings<T>(List<T> bindings) { }
+    [DllImport("user32.dll")] private static extern int GetWindowLongW(nint window, int index);
+    private static void VerifyShortcutOverlay(Assembly assembly, string outputDirectory)
+    {
+        Window Create(string name, params object[] args) => (Window)Activator.CreateInstance(assembly.GetType("FocusBind.App." + name)!,
+            BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic, null, args, null)!;
+        void Check(bool value) { if (!value) throw new Exception("Shortcut overlay regression failed."); }
+        var settings = new ShortcutOverlaySettings { Enabled = true, TransparencyPercent = 35 };
+        var applied = false;
+        var processWindow = new WindowSnapshot(1, 1234, 1, new WindowIdentity(@"C:\Games\Langrisser.exe", "Game", "UnityWndClass"),
+            new WindowBounds(0, 0, 1280, 720), 96, true, false, true);
+        var dialog = Create("OverlaySettingsWindow", settings, (Action<ShortcutOverlaySettings>)(_ => applied = true), new[] { processWindow });
+        var processCombo = (ComboBox)dialog.GetType().GetField("_process", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(dialog)!;
+        processCombo.SelectedIndex = 1;
+        Check(processCombo.SelectedItem.ToString()!.StartsWith("Langrisser.exe") && settings.TargetProcess is null);
+        var slider = (Slider)dialog.GetType().GetField("_transparency", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(dialog)!;
+        slider.Value = 60;
+        Check(!applied && settings.TransparencyPercent == 35);
+        Render(dialog, Path.Combine(outputDirectory, "overlay-settings.png"), 600, 570);
+        dialog.Close();
+        var savedTarget = new ShortcutOverlaySettings { Enabled = true, TargetProcess = OverlayProcessTarget.FromWindow(processWindow.Identity) };
+        var noProcessDialog = Create("OverlaySettingsWindow", savedTarget, (Action<ShortcutOverlaySettings>)(_ => { }), Array.Empty<WindowSnapshot>());
+        var savedCombo = (ComboBox)noProcessDialog.GetType().GetField("_process", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(noProcessDialog)!;
+        Check(savedCombo.SelectedIndex == 1 && savedCombo.SelectedItem.ToString()!.Contains("저장된 대상"));
+        noProcessDialog.Close();
+        var shortcutType = assembly.GetType("FocusBind.App.GlobalShortcuts")!;
+        var parse = shortcutType.GetMethod("Parse", BindingFlags.Static | BindingFlags.NonPublic)!;
+        const string four = "[{\"Action\":0,\"KeyCode\":121,\"Modifiers\":6},{\"Action\":1,\"KeyCode\":118,\"Modifiers\":6},{\"Action\":2,\"KeyCode\":119,\"Modifiers\":6},{\"Action\":3,\"KeyCode\":120,\"Modifiers\":6}]";
+        var migrated = (System.Collections.IList)parse.Invoke(null, [four])!;
+        Check(migrated.Count == 5);
+        var last = migrated[4]!;
+        Check(Convert.ToInt32(last.GetType().GetProperty("Action")!.GetValue(last)) == 5);
+        Check((int)last.GetType().GetProperty("KeyCode")!.GetValue(last)! == 122); // F10 occupied: choose F11.
+        var legacy = four[..^1] + ",{\"Action\":4,\"KeyCode\":122,\"Modifiers\":6}]";
+        var legacyMigrated = (System.Collections.IList)parse.Invoke(null, [legacy])!;
+        Check(legacyMigrated.Count == 5 && !legacyMigrated.Cast<object>().Any(b => Convert.ToInt32(b.GetType().GetProperty("Action")!.GetValue(b)) == 4));
+        var restored = (System.Collections.IList)parse.Invoke(null, [System.Text.Json.JsonSerializer.Serialize(migrated)])!;
+        Check(restored.Count == 5 && (int)restored[4]!.GetType().GetProperty("KeyCode")!.GetValue(restored[4])! == 122);
+        var profile = new Profile { Name = "전투 프로필" };
+        var layout = profile.Layouts[0];
+        profile.Mappings.Add(new Mapping { Name = "공격", Trigger = new InputTrigger { KeyCode = 65, Modifiers = ModifierKeys.Control },
+            Actions = new ActionSequence { Steps = [new AutomationAction { Kind = ActionKind.CoordinateClick,
+                Coordinate = new CoordinateTarget { LayoutId = layout.Id, Space = CoordinateSpace.ClientNormalized, X = 0.5, Y = 0.5 } }] } });
+        profile.Mappings.Add(new Mapping { Name = "확대", Trigger = new InputTrigger { KeyCode = 0x6B },
+            Actions = new ActionSequence { Steps = [new AutomationAction { Kind = ActionKind.VerticalWheel, Amount = 120 }] } });
+        profile.Mappings.Add(new Mapping { Name = "취소", Trigger = new InputTrigger { KeyCode = 0x1B, Phase = TriggerPhase.Release },
+            Actions = new ActionSequence { Steps = [new AutomationAction { Kind = ActionKind.CoordinateClick,
+                Coordinate = new CoordinateTarget { LayoutId = layout.Id, Space = CoordinateSpace.ClientNormalized, X = 0.9, Y = 0.85 } }] } });
+        var context = new CoordinateContext(new PixelRect(-1920, 100, 1200, 675), 144, layout);
+        var hints = ShortcutOverlayLayout.Build(profile, context);
+        var overlay = Create("ShortcutOverlayWindow");
+        Check(!overlay.ShowActivated && !overlay.Focusable && !overlay.ShowInTaskbar && !overlay.IsHitTestVisible && overlay.AllowsTransparency);
+        var render = overlay.GetType().GetMethod("RenderHints", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        render.Invoke(overlay, [profile.Name, context, hints, 0.65]);
+        var canvas = (Canvas)overlay.Content;
+        Check(canvas.Opacity == 0.65 && !canvas.IsHitTestVisible);
+        var dots = canvas.Children.OfType<Border>().Where(b => b.Width == 6).ToArray();
+        Check(dots.Any(b => Math.Abs(Canvas.GetLeft(b) - 397) < 1 && Math.Abs(Canvas.GetTop(b) - 222.33) < 1));
+        Render(overlay, Path.Combine(outputDirectory, "overlay-preview.png"), 800, 450);
+        Roots[overlay].Background = new SolidColorBrush(Color.FromRgb(64, 86, 96));
+        Render(overlay, Path.Combine(outputDirectory, "overlay-preview.png"), 800, 450);
+        overlay.Close();
+        // Hidden HWND only: verify native passthrough/non-activation flags without displaying a window.
+        var native = Create("ShortcutOverlayWindow");
+        var handle = new WindowInteropHelper(native).EnsureHandle();
+        var styles = GetWindowLongW(handle, -20);
+        Check((styles & (0x08000000 | 0x00000020 | 0x00000080 | 0x00080000)) ==
+            (0x08000000 | 0x00000020 | 0x00000080 | 0x00080000));
+        native.Close();
+        Console.WriteLine("PASS overlay process draft, shortcut migration/fallback/roundtrip, DPI render, and hidden native click-through styles.");
+    }
+    private static void VerifyAdvancedEditors(Assembly assembly, string outputDirectory)
+    {
+        var profile = new Profile { Name = "전투 설정", Window = new WindowMatcher { ExecutableName = "example.exe", WindowClass = "TestWindow" } };
+        var mapping = new Mapping { Name = "연속 동작", Trigger = new InputTrigger { KeyCode = 65 },
+            Actions = new ActionSequence { Steps = [new AutomationAction { Kind = ActionKind.KeyTap, KeyCode = 65 },
+                new AutomationAction { Kind = ActionKind.Repeat, RepeatCount = 2, Steps = [new AutomationAction { Kind = ActionKind.Delay, DelayMilliseconds = 100 }] }] } };
+        profile.Mappings.Add(mapping);
+        Window Create(string name, params object[] args) => (Window)Activator.CreateInstance(assembly.GetType("FocusBind.App." + name)!,
+            BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic, null, args, null)!;
+        object? Call(object obj, string method, params object[] args) => obj.GetType().GetMethod(method, BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(obj, args);
+        T Field<T>(object obj, string name) => (T)obj.GetType().GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(obj)!;
+        void Check(bool value) { if (!value) throw new Exception("Advanced editor regression failed."); }
+        var identity = new WindowIdentity(@"C:\Apps\example.exe", "Battle", "TestWindow");
+        var conditions = Create("ProfileSettingsWindow", profile, identity);
+        Field<TextBox>(conditions, "_title").Text = "[";
+        Check((bool)Call(conditions, "ValidateDraft")! == false && profile.Window.TitlePattern is null);
+        Field<TextBox>(conditions, "_title").Text = "^Battle$";
+        Check((bool)Call(conditions, "ValidateDraft")!);
+        Render(conditions, Path.Combine(outputDirectory, "profile-conditions.png"), 600, 640);
+        conditions.Close();
+        var actions = Create("ActionListWindow", profile, mapping.Actions);
+        var sequence = (ActionSequence)actions.GetType().GetProperty("Sequence", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(actions)!;
+        Call(actions, "Add", false);
+        Check(sequence.Steps.Count == 3 && mapping.Actions.Steps.Count == 2);
+        Call(actions, "Move", -1);
+        Check(sequence.Steps[0].Kind == ActionKind.KeyTap && sequence.Steps[0].KeyCode == 65);
+        Call(actions, "Delete"); Check(sequence.Steps.Count == 2);
+        var tree = Field<TreeView>(actions, "_tree");
+        ((TreeViewItem)tree.Items[1]).IsSelected = true;
+        var addKind = Field<ComboBox>(actions, "_addKind"); addKind.SelectedIndex = 6; // vertical wheel
+        Call(actions, "Add", true);
+        Check(sequence.Steps[1].Steps.Count == 2 && sequence.Steps[1].Steps[1].Kind == ActionKind.VerticalWheel);
+        var box = Field<StackPanel>(actions, "_form").Children.OfType<TextBox>().Single();
+        box.Text = "bad"; Check((bool)Call(actions, "TryCommit")! == false);
+        box.Text = "-360"; Check((bool)Call(actions, "TryCommit")!);
+        Check(sequence.Steps[1].Steps[1].Amount == -360 && mapping.Actions.Steps[1].Steps.Count == 1);
+        Check((bool)Call(actions, "ValidateSequence")!);
+        Render(actions, Path.Combine(outputDirectory, "action-list.png"), 900, 700);
+        addKind.SelectedIndex = 8; // coordinate click
+        Call(actions, "Add", false);
+        var coordinateForm = Field<StackPanel>(actions, "_form");
+        coordinateForm.Children.OfType<ComboBox>().ElementAt(1).SelectedIndex = 2;
+        var anchorGrid = coordinateForm.Children.OfType<System.Windows.Controls.Primitives.UniformGrid>().Single();
+        ((RadioButton)anchorGrid.Children[8]).IsChecked = true;
+        var coordinates = coordinateForm.Children.OfType<TextBox>().ToArray();
+        coordinates[0].Text = "-20"; coordinates[1].Text = "-30";
+        Check((bool)Call(actions, "TryCommit")!);
+        Check(sequence.Steps[1].Steps.Last().Coordinate is { Space: CoordinateSpace.AnchoredOffset, Anchor: Anchor.BottomRight, X: -20, Y: -30 });
+        Render(actions, Path.Combine(outputDirectory, "action-coordinate.png"), 900, 700);
+        actions.Close();
+        var layoutProfile = new Profile { Name = "레이아웃", Window = profile.Window };
+        layoutProfile.Mappings.Add(new Mapping { Trigger = new InputTrigger { KeyCode = 65 },
+            Actions = new ActionSequence { Steps = [new AutomationAction { Kind = ActionKind.CoordinateClick,
+                Coordinate = new CoordinateTarget { LayoutId = layoutProfile.Layouts[0].Id, X = 0.5, Y = 0.5 } }] } });
+        var layoutsWindow = Create("LayoutSettingsWindow", layoutProfile);
+        var layouts = (List<LayoutVariant>)layoutsWindow.GetType().GetProperty("Layouts", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(layoutsWindow)!;
+        var layoutForm = Field<StackPanel>(layoutsWindow, "_form");
+        layoutForm.Children.OfType<TextBox>().ElementAt(8).Text = "1.2";
+        Check((bool)Call(layoutsWindow, "Commit")! == false && layoutProfile.Layouts[0].Content.Width == 1);
+        layoutForm.Children.OfType<TextBox>().ElementAt(8).Text = "0.8";
+        Check((bool)Call(layoutsWindow, "Commit")! && layouts[0].Content.Width == 0.8);
+        Call(layoutsWindow, "Add"); Call(layoutsWindow, "SetDefault");
+        Check(layouts.Count == 2 && layouts.Count(l => l.IsDefault) == 1 && layouts[1].IsDefault && layoutProfile.Layouts.Count == 1);
+        var layoutList = Field<ListBox>(layoutsWindow, "_list");
+        layoutList.SelectedIndex = 0;
+        Check(layoutList.SelectedIndex == 0);
+        Call(layoutsWindow, "Delete"); Check(layouts.Count == 2); // referenced layout is protected
+        layoutList.SelectedIndex = 1;
+        Call(layoutsWindow, "Delete"); Check(layouts.Count == 2); // default is protected
+        Render(layoutsWindow, Path.Combine(outputDirectory, "layouts.png"), 850, 730);
+        layoutsWindow.Close();
+        var snapshot = new WindowSnapshot(0, 0, 0, identity, new WindowBounds(0, 0, 1280, 720), 96, true, false, false);
+        var editor = Create("BindingEditorWindow", snapshot);
+        var profiles = (ListBox)editor.FindName("ProfilesList"); profiles.ItemsSource = new[] { profile }; profiles.SelectedIndex = 0;
+        Check(((ComboBox)editor.FindName("ActionModeCombo")).SelectedIndex == 3);
+        Call(editor, "CommitInspector"); Check(mapping.Actions.Steps.Count == 2 && mapping.Actions.Steps[1].RepeatCount == 2);
+        var second = new Mapping { Name = "미지원 동작", Trigger = new InputTrigger { KeyCode = 66 },
+            Actions = new ActionSequence { Steps = [new AutomationAction { Kind = ActionKind.Lua, LuaSource = "return" }] } };
+        profile.Mappings.Add(second);
+        var mappings = (ListBox)editor.FindName("MappingsList"); mappings.Items.Refresh(); mappings.SelectedItem = second;
+        Check(((TextBlock)editor.FindName("MappingStatusText")).Text.Contains("Lua"));
+        Call(editor, "MoveMapping", -1);
+        Check(profile.Mappings[0] == second && mappings.SelectedItem == second);
+        ((CheckBox)editor.FindName("MappingEnabledBox")).IsChecked = false;
+        Check(!second.Enabled && ((TextBlock)editor.FindName("MappingStatusText")).Text.Contains("비활성"));
+        editor.Close();
+        var dry = Create("DryRunWindow", profile, mapping, snapshot);
+        var previousContext = SynchronizationContext.Current;
+        SynchronizationContext.SetSynchronizationContext(new System.Windows.Threading.DispatcherSynchronizationContext());
+        try
+        {
+            dry.RaiseEvent(new RoutedEventArgs(FrameworkElement.LoadedEvent));
+            PumpUntil(() => Field<bool>(dry, "_finished"));
+            Check(Field<TextBox>(dry, "_log").Text.Contains("모의 실행 완료"));
+        }
+        finally { SynchronizationContext.SetSynchronizationContext(previousContext); }
+        Render(dry, Path.Combine(outputDirectory, "dry-run.png"), 760, 600);
+        dry.Close();
+        var cancelProfile = new Profile { Name = "취소 검사", Window = profile.Window };
+        var cancelMapping = new Mapping { Trigger = new InputTrigger { KeyCode = 65 }, Actions = new ActionSequence { Steps = [
+            new AutomationAction { Kind = ActionKind.KeyDown, KeyCode = 65 },
+            new AutomationAction { Kind = ActionKind.Delay, DelayMilliseconds = 60000 }
+        ] } }; cancelProfile.Mappings.Add(cancelMapping);
+        var canceledDry = Create("DryRunWindow", cancelProfile, cancelMapping, snapshot);
+        SynchronizationContext.SetSynchronizationContext(new System.Windows.Threading.DispatcherSynchronizationContext());
+        try
+        {
+            canceledDry.RaiseEvent(new RoutedEventArgs(FrameworkElement.LoadedEvent));
+            PumpUntil(() => Field<TextBox>(canceledDry, "_log").Text.Contains("키 누름"));
+            canceledDry.Close();
+            PumpUntil(() => Field<bool>(canceledDry, "_finished"));
+            Check(Field<TextBox>(canceledDry, "_log").Text.Contains("키 뗌 VK 65"));
+        }
+        finally { SynchronizationContext.SetSynchronizationContext(previousContext); }
+        Console.WriteLine("PASS conditions/actions/layouts editors, draft isolation, custom sequence preservation, mapping order/status, dry-run completion/close cancellation (offline).");
+    }
+    private static void PumpUntil(Func<bool> done)
+    {
+        var frame = new System.Windows.Threading.DispatcherFrame();
+        var timer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(10) };
+        var elapsed = System.Diagnostics.Stopwatch.StartNew();
+        var timedOut = false;
+        timer.Tick += (_, _) =>
+        {
+            if (done()) frame.Continue = false;
+            else if (elapsed.Elapsed > TimeSpan.FromSeconds(5)) { timedOut = true; frame.Continue = false; }
+        };
+        timer.Start();
+        try { System.Windows.Threading.Dispatcher.PushFrame(frame); }
+        finally { timer.Stop(); }
+        if (timedOut) throw new TimeoutException("Offline window did not finish.");
+    }
     private static void VerifyWheelEditor(Assembly assembly, string outputDirectory)
     {
         // Construct without showing: no Loaded handler, live capture, input injection, or settings writes.

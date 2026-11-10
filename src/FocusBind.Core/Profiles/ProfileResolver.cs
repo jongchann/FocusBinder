@@ -18,6 +18,13 @@ public static class ProfileResolver
 
     public static bool Matches(WindowMatcher matcher, WindowIdentity window)
     {
+        try { return MatchesCore(matcher, window); }
+        catch (Exception ex) when (ex is ArgumentException or RegexMatchTimeoutException or NotSupportedException or System.IO.PathTooLongException)
+        { return false; }
+    }
+
+    private static bool MatchesCore(WindowMatcher matcher, WindowIdentity window)
+    {
         var pathUnavailable = string.IsNullOrWhiteSpace(window.ExecutablePath);
         // A protected/elevated process may reveal its name but deny its full path.
         // Require the saved window class as a second identifier in that case.

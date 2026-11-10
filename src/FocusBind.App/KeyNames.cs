@@ -8,7 +8,7 @@ namespace FocusBind.App;
 
 internal static class KeyNames
 {
-    internal static string Format(int code, Modifiers modifiers)
+    internal static string Format(int code, Modifiers modifiers, bool includeCode = true)
     {
         var parts = new List<string>();
         if (modifiers.HasFlag(Modifiers.Control)) parts.Add("Ctrl");
@@ -22,7 +22,7 @@ internal static class KeyNames
             >= 0x30 and <= 0x39 => ((char)code).ToString(),
             _ => KeyInterop.KeyFromVirtualKey(code).ToString()
         };
-        parts.Add($"{name} [VK {code} / 0x{code:X2}]");
+        parts.Add(includeCode ? $"{name} [VK {code} / 0x{code:X2}]" : name);
         return string.Join(" + ", parts);
     }
 

@@ -10,7 +10,8 @@ internal sealed class ShortcutSettingsWindow : Window
     internal static string Label(ShortcutAction action) => action switch
     {
         ShortcutAction.MappingToggle => "매핑 시작 / 종료", ShortcutAction.VolumeUp => "대상 창 음량 +5%",
-        ShortcutAction.VolumeDown => "대상 창 음량 -5%", _ => "대상 창 음소거 토글"
+        ShortcutAction.VolumeDown => "대상 창 음량 -5%", ShortcutAction.MuteToggle => "대상 창 음소거 토글",
+        _ => "대상 프로세스 오버레이 켜기 / 끄기"
     };
     internal ShortcutSettingsWindow(List<ShortcutBinding> bindings, Action<List<ShortcutBinding>> apply)
     {

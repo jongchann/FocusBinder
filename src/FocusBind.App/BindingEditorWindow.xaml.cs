@@ -31,6 +31,7 @@ public partial class BindingEditorWindow : Window
     private WindowSnapshot? _previewSnapshot;
     private bool _capturingPreview;
     private HwndSource? _messageSource;
+    private readonly HashSet<Guid> _editableProfileIds = [];
 
     public BindingEditorWindow(WindowSnapshot targetWindow)
     {
@@ -156,6 +157,7 @@ public partial class BindingEditorWindow : Window
             }
             else StatusText.Text = $"프로필 {matching.Count}개를 불러왔습니다.";
             ProfilesList.ItemsSource = matching;
+            foreach (var profile in matching) _editableProfileIds.Add(profile.Id);
             ProfilesList.SelectedItem = ProfileResolver.Resolve(_document, _targetWindow.Identity) ?? matching[0];
         }
         catch (Exception ex)
@@ -241,8 +243,9 @@ public partial class BindingEditorWindow : Window
 
     private void RefreshProfiles(Profile? select)
     {
+        if (select is not null) _editableProfileIds.Add(select.Id);
         ProfilesList.ItemsSource = _document.Profiles.Where(p =>
-            ProfileResolver.Matches(p.Window, _targetWindow.Identity)).ToList();
+            _editableProfileIds.Contains(p.Id) || ProfileResolver.Matches(p.Window, _targetWindow.Identity)).ToList();
         ProfilesList.SelectedItem = select ?? ProfilesList.Items.Cast<Profile>().FirstOrDefault();
     }
 
@@ -297,6 +300,7 @@ public partial class BindingEditorWindow : Window
         _selectedMapping = MappingsList.SelectedItem as Mapping;
         _updatingInspector = true;
         MappingNameBox.Text = _selectedMapping?.Name ?? string.Empty;
+        MappingEnabledBox.IsChecked = _selectedMapping?.Enabled ?? false;
         TriggerTypeCombo.SelectedIndex = _selectedMapping is null ? 0 : TriggerOptionIndex(_selectedMapping.Trigger);
         KeyCapturePanel.Visibility = TriggerTypeCombo.SelectedIndex == 0 ? Visibility.Visible : Visibility.Collapsed;
         KeyBox.Text = _selectedMapping is null ? string.Empty : FormatTrigger(_selectedMapping.Trigger);
@@ -304,8 +308,8 @@ public partial class BindingEditorWindow : Window
         ConsumeBox.IsChecked = _selectedMapping?.ConsumeOriginal ?? false;
         var repeat = _selectedMapping?.Actions.Steps.FirstOrDefault(a => a.Kind == ActionKind.Repeat);
         var wheel = SelectedWheelAction();
-        ActionModeCombo.SelectedIndex = wheel is not null ? 2 : repeat is null ? 0 : 1;
-        RepeatSettings.Visibility = wheel is null && repeat is not null ? Visibility.Visible : Visibility.Collapsed;
+        ActionModeCombo.SelectedIndex = BasicActionMode(_selectedMapping?.Actions);
+        RepeatSettings.Visibility = ActionModeCombo.SelectedIndex == 1 ? Visibility.Visible : Visibility.Collapsed;
         WheelSettings.Visibility = wheel is null ? Visibility.Collapsed : Visibility.Visible;
         CoordinateSettings.Visibility = wheel is null ? Visibility.Visible : Visibility.Collapsed;
         WheelDirectionCombo.SelectedIndex = wheel?.Kind == ActionKind.HorizontalWheel
@@ -323,6 +327,96 @@ public partial class BindingEditorWindow : Window
         UpdateCoordinateText();
         DrawMarkers();
         UpdateConflictStatus();
+        UpdateMappingStatus();
+    }
+
+    private static int BasicActionMode(ActionSequence? sequence)
+    {
+        if (sequence is null || sequence.Steps.Count == 0) return 3;
+        if (sequence.Steps.Count != 1) return 3;
+        var step = sequence.Steps[0];
+        if (step.Kind == ActionKind.CoordinateClick) return 0;
+        if (step.Kind is ActionKind.VerticalWheel or ActionKind.HorizontalWheel) return 2;
+        return step.Kind == ActionKind.Repeat && step.Steps.Count == 2 &&
+            step.Steps[0].Kind == ActionKind.CoordinateClick && step.Steps[1].Kind == ActionKind.Delay ? 1 : 3;
+    }
+
+    private void UpdateMappingStatus()
+    {
+        MappingStatusText.Text = _selectedMapping is null ? "매핑을 선택하세요." : !_selectedMapping.Enabled
+            ? "비활성 매핑입니다." : _selectedMapping.Actions.Steps.Count == 0 ? "실행할 액션이 없습니다."
+            : InputActionRunner.GetUnsupportedReason(_selectedMapping.Actions, true) ?? "";
+    }
+
+    private void MappingEnabled_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_updatingInspector || _selectedMapping is null) return;
+        _selectedMapping.Enabled = MappingEnabledBox.IsChecked == true;
+        UpdateMappingStatus();
+    }
+
+    private void ProfileSettings_Click(object sender, RoutedEventArgs e)
+    {
+        if (_selectedProfile is null) return;
+        StopRecording();
+        var dialog = new ProfileSettingsWindow(_selectedProfile, _targetWindow.Identity) { Owner = this };
+        if (dialog.ShowDialog() != true) return;
+        _selectedProfile.Name = dialog.ProfileName;
+        _selectedProfile.Window = dialog.Matcher;
+        ProfilesList.Items.Refresh();
+        StatusText.Text = "창 조건을 적용했습니다. 변경사항 저장을 누르면 파일에 기록됩니다.";
+    }
+
+    private void LayoutSettings_Click(object sender, RoutedEventArgs e)
+    {
+        if (_selectedProfile is null) return;
+        CommitInspector(); StopRecording();
+        var dialog = new LayoutSettingsWindow(_selectedProfile) { Owner = this };
+        if (dialog.ShowDialog() != true) return;
+        _selectedProfile.Layouts = dialog.Layouts;
+        RefreshMappingInspector();
+        StatusText.Text = "레이아웃을 적용했습니다. 좌표 공간·3×3 앵커는 액션 목록 편집에서 선택할 수 있습니다. 변경사항을 저장하세요.";
+    }
+
+    private void MoveMappingUp_Click(object sender, RoutedEventArgs e) => MoveMapping(-1);
+    private void MoveMappingDown_Click(object sender, RoutedEventArgs e) => MoveMapping(1);
+    private void MoveMapping(int direction)
+    {
+        if (_selectedProfile is null || _selectedMapping is null) return;
+        var index = _selectedProfile.Mappings.IndexOf(_selectedMapping);
+        var next = index + direction;
+        if (next < 0 || next >= _selectedProfile.Mappings.Count) return;
+        var selected = _selectedMapping;
+        _selectedProfile.Mappings.RemoveAt(index);
+        _selectedProfile.Mappings.Insert(next, selected);
+        MappingsList.Items.Refresh();
+        MappingsList.SelectedItem = selected;
+    }
+
+    private void EditActions_Click(object sender, RoutedEventArgs e)
+    {
+        if (_selectedProfile is null || _selectedMapping is null) return;
+        CommitInspector(); StopRecording();
+        var dialog = new ActionListWindow(_selectedProfile, _selectedMapping.Actions) { Owner = this };
+        if (dialog.ShowDialog() != true) return;
+        _selectedMapping.Actions = dialog.Sequence;
+        RefreshMappingInspector();
+        StatusText.Text = "액션 목록을 적용했습니다. 변경사항 저장을 누르면 파일에 기록됩니다.";
+    }
+
+    private void DryRun_Click(object sender, RoutedEventArgs e)
+    {
+        if (_selectedProfile is null || _selectedMapping is null) return;
+        CommitInspector(); StopRecording();
+        var snapshot = WindowInspector.TryGet(_targetWindow.Handle) ?? _previewSnapshot ?? _targetWindow;
+        new DryRunWindow(_selectedProfile, _selectedMapping, snapshot) { Owner = this }.ShowDialog();
+    }
+
+    private void CommitInspector()
+    {
+        CommitLongPressMilliseconds(); CommitWheelAmount();
+        RepeatSettings_LostFocus(this, new RoutedEventArgs());
+        if (_selectedMapping is not null) _selectedMapping.Name = MappingNameBox.Text.Trim();
     }
 
     private static int TriggerOptionIndex(InputTrigger trigger) => trigger.Kind switch
@@ -500,6 +594,11 @@ public partial class BindingEditorWindow : Window
     private void ActionModeCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (_updatingInspector || _selectedMapping is null) return;
+        if (ActionModeCombo.SelectedIndex == 3)
+        {
+            RepeatSettings.Visibility = WheelSettings.Visibility = Visibility.Collapsed;
+            return;
+        }
         if (ActionModeCombo.SelectedIndex == 2)
         {
             _selectedMapping.Actions.Steps = [new AutomationAction { Kind = ActionKind.VerticalWheel, Amount = 120 }];
@@ -527,8 +626,9 @@ public partial class BindingEditorWindow : Window
         RefreshMappingInspector();
     }
 
-    private AutomationAction? SelectedWheelAction() => _selectedMapping?.Actions.Steps
-        .FirstOrDefault(a => a.Kind is ActionKind.VerticalWheel or ActionKind.HorizontalWheel);
+    private AutomationAction? SelectedWheelAction() => _selectedMapping?.Actions.Steps.Count == 1 &&
+        _selectedMapping.Actions.Steps[0].Kind is ActionKind.VerticalWheel or ActionKind.HorizontalWheel
+            ? _selectedMapping.Actions.Steps[0] : null;
 
     private void WheelDirectionCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
@@ -552,6 +652,7 @@ public partial class BindingEditorWindow : Window
 
     private void RepeatSettings_LostFocus(object sender, RoutedEventArgs e)
     {
+        if (ActionModeCombo.SelectedIndex != 1) return;
         var repeat = _selectedMapping?.Actions.Steps.FirstOrDefault(a => a.Kind == ActionKind.Repeat);
         if (repeat is null) return;
         repeat.RepeatCount = int.TryParse(RepeatCountBox.Text, out var count) ? Math.Clamp(count, 1, 1000) : 5;
@@ -739,9 +840,7 @@ public partial class BindingEditorWindow : Window
 
     private async void Save_Click(object sender, RoutedEventArgs e)
     {
-        CommitLongPressMilliseconds();
-        CommitWheelAmount();
-        RepeatSettings_LostFocus(sender, e);
+        CommitInspector();
         try
         {
             var conflicts = _document.Profiles.SelectMany(TriggerConflictDetector.Find).ToList();
@@ -750,7 +849,7 @@ public partial class BindingEditorWindow : Window
                 StatusText.Text = $"저장 전 트리거 충돌을 해결하세요: {conflicts[0].First.Name} / {conflicts[0].Second.Name}";
                 return;
             }
-            if (_selectedProfile is not null)
+            if (_selectedProfile is not null && ProfileResolver.Matches(_selectedProfile.Window, _targetWindow.Identity))
             {
                 ProfileSelections.Select(_document, _selectedProfile.Id, _targetWindow.Identity);
             }

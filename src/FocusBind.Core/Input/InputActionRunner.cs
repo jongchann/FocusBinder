@@ -25,19 +25,37 @@ public sealed class InputActionRunner(IInputOutput output)
     private readonly SemaphoreSlim _serial = new(1, 1);
 
     public static bool Supports(ActionSequence sequence, bool allowCoordinates = false) =>
-        SupportsSteps(sequence.Steps, allowCoordinates, 0);
+        GetUnsupportedReason(sequence, allowCoordinates) is null;
 
-    private static bool SupportsSteps(IReadOnlyList<AutomationAction> steps, bool allowCoordinates, int depth) =>
-        depth <= 12 && steps.All(step => step.Kind switch
+    public static string? GetUnsupportedReason(ActionSequence sequence, bool allowCoordinates = false) =>
+        CheckSteps(sequence.Steps, allowCoordinates, 0, "액션");
+
+    private static string? CheckSteps(IReadOnlyList<AutomationAction> steps, bool allowCoordinates, int depth, string path)
+    {
+        if (depth > 12) return $"{path}: 중첩 깊이는 12단계까지 지원합니다.";
+        for (var index = 0; index < steps.Count; index++)
         {
-            ActionKind.KeyDown or ActionKind.KeyUp or ActionKind.KeyTap or
-            ActionKind.MouseDown or ActionKind.MouseUp or ActionKind.MouseClick or
-            ActionKind.VerticalWheel or ActionKind.HorizontalWheel or ActionKind.Delay => true,
-            ActionKind.CoordinateClick => allowCoordinates && step.Coordinate is not null,
-            ActionKind.Repeat => step.RepeatCount is >= 1 and <= 1000 && step.Steps.Count > 0 &&
-                SupportsSteps(step.Steps, allowCoordinates, depth + 1),
-            _ => false
-        });
+            var step = steps[index];
+            var location = $"{path} {index + 1}";
+            string? reason = step.Kind switch
+            {
+                ActionKind.KeyDown or ActionKind.KeyUp or ActionKind.KeyTap or
+                ActionKind.MouseDown or ActionKind.MouseUp or ActionKind.MouseClick or
+                ActionKind.VerticalWheel or ActionKind.HorizontalWheel or ActionKind.Delay => null,
+                ActionKind.CoordinateClick => !allowCoordinates ? "좌표 해석기가 필요합니다."
+                    : step.Coordinate is null ? "클릭 좌표가 없습니다." : null,
+                ActionKind.Repeat => step.RepeatCount is < 1 or > 1000 ? "반복 횟수는 1~1000이어야 합니다."
+                    : step.Steps.Count == 0 ? "반복 안에 액션이 없습니다."
+                    : CheckSteps(step.Steps, allowCoordinates, depth + 1, "반복 내부"),
+                ActionKind.Lua => "Lua 실행은 보류 중입니다.",
+                ActionKind.Conditional => "조건 분기는 아직 지원하지 않습니다.",
+                ActionKind.CallSequence => "시퀀스 호출은 아직 지원하지 않습니다.",
+                _ => "알 수 없는 액션 종류입니다."
+            };
+            if (reason is not null) return $"{location}: {reason}";
+        }
+        return null;
+    }
 
     public async Task RunAsync(ActionSequence sequence, Func<bool> canAct, int maxRunMilliseconds,
         CancellationToken cancellationToken, Func<CoordinateTarget, PixelPoint?>? resolveCoordinate = null,

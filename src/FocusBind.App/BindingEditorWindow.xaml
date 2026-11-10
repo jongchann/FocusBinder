@@ -47,11 +47,13 @@
                     </Grid.RowDefinitions>
                     <TextBlock Text="01   프로필" Style="{StaticResource SectionTitle}"/>
                     <ListBox x:Name="ProfilesList" Grid.Row="1" DisplayMemberPath="Name" SelectionChanged="ProfilesList_SelectionChanged"/>
-                    <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="0,6,0,20">
+                    <WrapPanel Grid.Row="2" Margin="0,6,0,12">
                         <Button Content="추가" Padding="8,3" Click="AddProfile_Click"/>
                         <Button Content="복제" Padding="8,3" Margin="4,0,0,0" Click="DuplicateProfile_Click"/>
                         <Button Content="삭제" Padding="8,3" Margin="4,0,0,0" Click="DeleteProfile_Click"/>
-                    </StackPanel>
+                        <Button Content="창 조건" Padding="8,3" Margin="4,0,0,0" Click="ProfileSettings_Click"/>
+                        <Button Content="레이아웃" Padding="8,3" Margin="4,6,0,0" Click="LayoutSettings_Click"/>
+                    </WrapPanel>
                     <TextBlock Grid.Row="3" Text="02   매핑" Style="{StaticResource SectionTitle}"/>
                     <ListBox x:Name="MappingsList" Grid.Row="4" SelectionChanged="MappingsList_SelectionChanged">
                         <ListBox.ItemTemplate>
@@ -63,10 +65,12 @@
                             </DataTemplate>
                         </ListBox.ItemTemplate>
                     </ListBox>
-                    <StackPanel Grid.Row="5" Orientation="Horizontal" Margin="0,6,0,0">
+                    <WrapPanel Grid.Row="5" Margin="0,6,0,0">
                         <Button Content="매핑 추가" Padding="8,3" Click="AddMapping_Click"/>
                         <Button Content="삭제" Padding="8,3" Margin="4,0,0,0" Click="DeleteMapping_Click"/>
-                    </StackPanel>
+                        <Button Content="↑" ToolTip="매핑 위로" Padding="7,3" Margin="4,0,0,0" Click="MoveMappingUp_Click"/>
+                        <Button Content="↓" ToolTip="매핑 아래로" Padding="7,3" Margin="4,0,0,0" Click="MoveMappingDown_Click"/>
+                    </WrapPanel>
                 </Grid>
             </Border>
             <Grid Grid.Column="1" Margin="18">
@@ -100,6 +104,8 @@
                     <TextBlock Text="03   매핑 속성" FontSize="17" FontWeight="SemiBold" Margin="0,0,0,20"/>
                     <TextBlock Text="이름"/>
                     <TextBox x:Name="MappingNameBox" Margin="0,4,0,14" LostFocus="MappingNameBox_LostFocus"/>
+                    <CheckBox x:Name="MappingEnabledBox" Content="이 매핑 사용" Margin="0,0,0,10" Checked="MappingEnabled_Changed" Unchecked="MappingEnabled_Changed"/>
+                    <TextBlock x:Name="MappingStatusText" TextWrapping="Wrap" Foreground="#FFB03D38" Margin="0,0,0,10"/>
                     <TextBlock Text="트리거" FontWeight="SemiBold"/>
                     <ComboBox x:Name="TriggerTypeCombo" Margin="0,4,0,8" SelectionChanged="TriggerTypeCombo_SelectionChanged">
                         <ComboBoxItem Content="키보드 키"/>
@@ -140,7 +146,13 @@
                         <ComboBoxItem Content="한 번 클릭"/>
                         <ComboBoxItem Content="반복 클릭"/>
                         <ComboBoxItem Content="마우스 휠"/>
+                        <ComboBoxItem Content="사용자 시퀀스"/>
                     </ComboBox>
+                    <WrapPanel Margin="0,0,0,8">
+                        <Button Content="액션 목록 편집" Padding="8,4" Click="EditActions_Click" Margin="0,0,6,6"/>
+                        <Button Content="입력 없이 테스트" Padding="8,4" Click="DryRun_Click" Margin="0,0,0,6"/>
+                    </WrapPanel>
+                    <TextBlock Text="기본 액션을 고르면 현재 액션 목록을 교체합니다. 여러 액션은 목록 편집을 사용하세요." FontSize="11" Foreground="#FF637589" TextWrapping="Wrap" Margin="0,0,0,8"/>
                     <StackPanel x:Name="WheelSettings" Visibility="Collapsed">
                         <TextBlock Text="스크롤 방향"/>
                         <ComboBox x:Name="WheelDirectionCombo" Margin="0,4,0,10" SelectionChanged="WheelDirectionCombo_SelectionChanged">

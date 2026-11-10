@@ -3,6 +3,7 @@ using FocusBind.Core.Input;
 using FocusBind.Core.Coordinates;
 using FocusBind.Win32.Input;
 using FocusBind.Win32;
+using FocusBind.Core.Overlay;
 
 if (args.Contains("--probe-audio"))
 {
@@ -63,6 +64,15 @@ var tests = new (string Name, Func<Task> Run)[]
     ("saved wheel mappings preserve direction and amount", WheelMappingPipeline),
     ("fast cursor mode round trips and restores optionally", FastCursorRoundTrip),
     ("fast cursor mode cancels safely and respects user movement", FastCursorSafety),
+    ("window matcher edits validate and round trip", WindowMatcherEditing),
+    ("unsupported actions report a nested reason", UnsupportedReasons),
+    ("dry run resolves coordinates and simulates input", DryRunActions),
+    ("dry run cancellation releases simulated keys", DryRunCancellation),
+    ("layout content and nine anchors round trip", LayoutEditing),
+    ("overlay preferences persist and reject invalid transparency", OverlayPreferences),
+    ("overlay visibility obeys runtime and foreground state", OverlayVisibility),
+    ("overlay hints share click coordinates and filter mappings", OverlayHints),
+    ("overlay target follows executable across windows and restarts", OverlayProcessMatching),
     ("timeout releases held input", ActionTimeout),
     ("canceled waiting run leaves active input alone", WaitingCancellation),
     ("invalid and changing coordinates stop before click", InvalidCoordinates),
@@ -543,6 +553,214 @@ static async Task BasicActions()
 }
 
 static string TempPath() => System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"focusbind-test-{Guid.NewGuid():N}.json");
+static async Task OverlayPreferences()
+{
+    var path = TempPath();
+    try
+    {
+        var store = new ShortcutOverlaySettingsStore(path);
+        Assert(!store.Load().Enabled && store.Load().Opacity == 0.65);
+        foreach (var percent in new[] { 0, 35, 100 })
+        {
+            store.Save(new ShortcutOverlaySettings { Enabled = true, TransparencyPercent = percent });
+            var loaded = store.Load();
+            Assert(loaded.Enabled && loaded.TransparencyPercent == percent && loaded.Opacity == 1 - percent / 100.0);
+        }
+        var before = await File.ReadAllTextAsync(path);
+        await Throws<InvalidDataException>(() => { store.Save(new ShortcutOverlaySettings { TransparencyPercent = 101 }); return Task.CompletedTask; });
+        Assert(await File.ReadAllTextAsync(path) == before);
+        await File.WriteAllTextAsync(path, "{}");
+        Assert(!store.Load().Enabled && store.Load().TransparencyPercent == 35);
+        await File.WriteAllTextAsync(path, "{\"transparencyPercent\":-1}");
+        await Throws<InvalidDataException>(() => Task.FromResult(store.Load()));
+    }
+    finally { if (File.Exists(path)) File.Delete(path); }
+}
+
+static Task OverlayVisibility()
+{
+    var settings = new ShortcutOverlaySettings { Enabled = true };
+    Assert(!ShortcutOverlayLayout.ShouldShow(settings, true, true, true));
+    settings.TargetProcess = new OverlayProcessTarget { ExecutableName = "example.exe" };
+    Assert(ShortcutOverlayLayout.ShouldShow(settings, true, true, true));
+    Assert(!ShortcutOverlayLayout.ShouldShow(settings, false, true, true));
+    Assert(!ShortcutOverlayLayout.ShouldShow(settings, true, false, true));
+    Assert(!ShortcutOverlayLayout.ShouldShow(settings, true, true, false));
+    settings.Enabled = false;
+    Assert(!ShortcutOverlayLayout.ShouldShow(settings, true, true, true));
+    settings.Enabled = true; settings.TransparencyPercent = 100;
+    Assert(!ShortcutOverlayLayout.ShouldShow(settings, true, true, true));
+    return Task.CompletedTask;
+}
+
+static async Task OverlayProcessMatching()
+{
+    var first = new WindowIdentity(@"C:\Games\Langrisser.exe", "Game", "UnityWndClass");
+    var target = OverlayProcessTarget.FromWindow(first);
+    target.Validate();
+    Assert(target.Matches(first with { Title = "Other window", WindowClass = "AnotherClass" }));
+    Assert(target.Matches(first with { ExecutablePath = @"c:\games\LANGRISSER.EXE" }));
+    Assert(!target.Matches(first with { ExecutablePath = @"D:\Other\Langrisser.exe" }));
+    Assert(!target.Matches(first with { ExecutablePath = @"C:\Games\Other.exe" }));
+    Assert(target.Matches(new WindowIdentity("", "Protected window", "UnityWndClass", "Langrisser.exe")));
+    var path = TempPath();
+    try
+    {
+        var store = new ShortcutOverlaySettingsStore(path);
+        store.Save(new ShortcutOverlaySettings { Enabled = true, TargetProcess = target });
+        var restored = store.Load();
+        Assert(restored.TargetProcess!.ExecutablePath == target.ExecutablePath && restored.TargetProcess.Matches(first));
+        var before = await File.ReadAllTextAsync(path);
+        await Throws<InvalidDataException>(() => { store.Save(new ShortcutOverlaySettings { TargetProcess = new OverlayProcessTarget() }); return Task.CompletedTask; });
+        Assert(await File.ReadAllTextAsync(path) == before);
+    }
+    finally { if (File.Exists(path)) File.Delete(path); }
+}
+
+static Task OverlayHints()
+{
+    var profile = NewProfile("Overlay"); profile.Mappings.Clear();
+    var layout = profile.Layouts.Single();
+    layout.Content = new NormalizedRect { X = 0.1, Y = 0.1, Width = 0.8, Height = 0.8 };
+    var coordinate = new CoordinateTarget { LayoutId = layout.Id, Space = CoordinateSpace.ContentNormalized, X = 0.25, Y = 0.5 };
+    var click = new Mapping { Name = "Click", Trigger = new InputTrigger { KeyCode = 65 }, Actions = new ActionSequence { Steps = [
+        new AutomationAction { Kind = ActionKind.Repeat, RepeatCount = 3, Steps = [
+            new AutomationAction { Kind = ActionKind.CoordinateClick, Coordinate = coordinate },
+            new AutomationAction { Kind = ActionKind.CoordinateClick, Coordinate = coordinate }
+        ] }
+    ] } };
+    profile.Mappings.Add(click);
+    profile.Mappings.Add(new Mapping { Name = "Wheel", Actions = new ActionSequence { Steps = [new AutomationAction { Kind = ActionKind.VerticalWheel, Amount = 120 }] } });
+    profile.Mappings.Add(new Mapping { Name = "Disabled", Enabled = false, Actions = click.Actions });
+    profile.Mappings.Add(new Mapping { Name = "Unsupported", Actions = new ActionSequence { Steps = [new AutomationAction { Kind = ActionKind.Lua }] } });
+    profile.Mappings.Add(new Mapping { Name = "Empty" });
+    foreach (var dpi in new uint[] { 96, 120, 144, 192 })
+    {
+        var context = new CoordinateContext(new PixelRect(-1920, -100, 1600, 900), dpi, layout);
+        var hints = ShortcutOverlayLayout.Build(profile, context);
+        Assert(hints.Count == 2 && hints.Count(h => h.Position is null) == 1);
+        Assert(CoordinateTransform.TryResolve(context, coordinate, out var expected));
+        Assert(hints.Single(h => h.MappingId == click.Id).Position == expected);
+        Assert(hints.Single(h => h.Position is null).Name == "Wheel");
+    }
+    coordinate.X = 2;
+    Assert(ShortcutOverlayLayout.Build(profile, new CoordinateContext(new PixelRect(0, 0, 800, 600), 96, layout)).Count == 1);
+    return Task.CompletedTask;
+}
+
+static async Task LayoutEditing()
+{
+    var profile = NewProfile("Layouts");
+    profile.Mappings.Clear();
+    var layout = profile.Layouts.Single();
+    layout.Content = new NormalizedRect { X = 0.1, Y = 0.2, Width = 0.8, Height = 0.6 };
+    layout.Scale = ScalePolicy.NoScale;
+    foreach (var anchor in Enum.GetValues<Anchor>())
+        profile.Mappings.Add(new Mapping { Name = anchor.ToString(), Trigger = new InputTrigger { KeyCode = 65 + (int)anchor },
+            Actions = new ActionSequence { Steps = [new AutomationAction { Kind = ActionKind.CoordinateClick,
+                Coordinate = new CoordinateTarget { LayoutId = layout.Id, Space = CoordinateSpace.AnchoredOffset, Anchor = anchor } }] } });
+    var path = TempPath();
+    try
+    {
+        var store = new ProfileStore(path);
+        await store.SaveAsync(new ProfileDocument { Profiles = [profile] });
+        var saved = (await store.LoadAsync()).Profiles.Single();
+        var context = new CoordinateContext(new PixelRect(-1000, 100, 1000, 1000), 192, saved.Layouts.Single());
+        var xs = new[] { -900, -500, -101 }; var ys = new[] { 300, 600, 899 };
+        for (var i = 0; i < 9; i++)
+        {
+            var target = saved.Mappings[i].Actions.Steps.Single().Coordinate!;
+            Assert(CoordinateTransform.TryResolve(context, target, out var point));
+            Assert(point == new PixelPoint(xs[i % 3], ys[i / 3]));
+        }
+        var before = await File.ReadAllTextAsync(path);
+        layout.Content.Width = 1.1;
+        await Throws<ProfileValidationException>(() => store.SaveAsync(new ProfileDocument { Profiles = [profile] }));
+        Assert(await File.ReadAllTextAsync(path) == before);
+    }
+    finally { if (File.Exists(path)) File.Delete(path); }
+}
+
+static async Task WindowMatcherEditing()
+{
+    var profile = NewProfile("Conditions");
+    profile.Window = new WindowMatcher { ExecutableName = "example.exe", TitlePattern = "^Battle \\d+$", WindowClass = "GameWindow" };
+    var target = new WindowIdentity(@"C:\Games\example.exe", "Battle 123", "GameWindow");
+    Assert(ProfileValidator.ValidateWindowMatcher(profile.Window).Count == 0 && ProfileResolver.Matches(profile.Window, target));
+    Assert(!ProfileResolver.Matches(profile.Window, target with { Title = "Settings" }));
+    Assert(!ProfileResolver.Matches(profile.Window, target with { WindowClass = "Other" }));
+    Assert(!ProfileResolver.Matches(new WindowMatcher { ExecutableName = "example.exe", TitlePattern = "[" }, target));
+    Assert(ProfileValidator.ValidateWindowMatcher(new WindowMatcher { ExecutableName = "example.exe", TitlePattern = "[" }).Count > 0);
+    Assert(ProfileValidator.ValidateWindowMatcher(new WindowMatcher()).Count > 0);
+    Assert(ProfileValidator.ValidateWindowMatcher(new WindowMatcher { ExecutablePath = "relative.exe" }).Count > 0);
+    Assert(!ProfileResolver.Matches(new WindowMatcher { ExecutablePath = "\0" }, target));
+    var path = TempPath();
+    try
+    {
+        var store = new ProfileStore(path);
+        await store.SaveAsync(new ProfileDocument { Profiles = [profile] });
+        var saved = (await store.LoadAsync()).Profiles.Single();
+        Assert(saved.Window.TitlePattern == profile.Window.TitlePattern && ProfileResolver.Matches(saved.Window, target));
+        var before = await File.ReadAllTextAsync(path);
+        profile.Window.TitlePattern = "[";
+        await Throws<ProfileValidationException>(() => store.SaveAsync(new ProfileDocument { Profiles = [profile] }));
+        Assert(await File.ReadAllTextAsync(path) == before);
+    }
+    finally { if (File.Exists(path)) File.Delete(path); }
+}
+
+static Task UnsupportedReasons()
+{
+    foreach (var (kind, text) in new[] { (ActionKind.Lua, "Lua"), (ActionKind.Conditional, "조건 분기"), (ActionKind.CallSequence, "시퀀스 호출") })
+    {
+        var actions = new ActionSequence { Steps = [new AutomationAction { Kind = ActionKind.Repeat, RepeatCount = 2,
+            Steps = [new AutomationAction { Kind = kind }] }] };
+        var reason = InputActionRunner.GetUnsupportedReason(actions, true);
+        Assert(reason is not null && reason.Contains("반복 내부") && reason.Contains(text));
+        Assert(!InputActionRunner.Supports(actions, true));
+    }
+    var click = new ActionSequence { Steps = [new AutomationAction { Kind = ActionKind.CoordinateClick }] };
+    Assert(InputActionRunner.GetUnsupportedReason(click, true)!.Contains("좌표"));
+    Assert(InputActionRunner.GetUnsupportedReason(new ActionSequence()) is null);
+    return Task.CompletedTask;
+}
+
+static async Task DryRunActions()
+{
+    var lines = new List<string>();
+    var output = new DryRunOutput(lines.Add, new PixelPoint(-100, 20));
+    var layout = new LayoutVariant();
+    var context = new CoordinateContext(new PixelRect(-1920, 0, 1280, 720), 144, layout);
+    var coordinate = new CoordinateTarget { LayoutId = layout.Id, Space = CoordinateSpace.ClientNormalized,
+        X = 0.5, Y = 0.5, ClickMode = CoordinateClickMode.FastCursor };
+    var sequence = new ActionSequence { Steps = [
+        new AutomationAction { Kind = ActionKind.KeyDown, KeyCode = 65 },
+        new AutomationAction { Kind = ActionKind.Repeat, RepeatCount = 2, Steps = [new AutomationAction { Kind = ActionKind.HorizontalWheel, Amount = -120 }] },
+        new AutomationAction { Kind = ActionKind.CoordinateClick, Coordinate = coordinate }
+    ] };
+    PixelPoint? Resolve(CoordinateTarget target) => CoordinateTransform.TryResolve(context, target, out var point) ? point : null;
+    await new InputActionRunner(output).RunAsync(sequence, () => true, 2000, CancellationToken.None, Resolve);
+    Assert(lines.Count(line => line == "가로 휠 -120") == 2);
+    Assert(lines.Contains("커서 이동 -1280, 360") && lines.Contains("커서 이동 -100, 20"));
+    Assert(lines.Contains("키 뗌 VK 65") && output.PressedCount == 0);
+    coordinate.ClickMode = CoordinateClickMode.WindowMessage;
+    var posted = new List<bool>();
+    await new InputActionRunner(output).RunAsync(new ActionSequence { Steps = [sequence.Steps.Last()] }, () => true,
+        2000, CancellationToken.None, Resolve, postCoordinateButton: (_, down) => posted.Add(down), postCoordinateMove: _ => { });
+    Assert(posted.SequenceEqual([true, false]) && output.PressedCount == 0);
+}
+
+static async Task DryRunCancellation()
+{
+    using var cancel = new CancellationTokenSource();
+    var lines = new List<string>();
+    var output = new DryRunOutput(line => { lines.Add(line); if (line == "마우스 누름 2") cancel.Cancel(); });
+    await Throws<OperationCanceledException>(() => new InputActionRunner(output).RunAsync(HeldInputSequence(),
+        () => true, 2000, cancel.Token));
+    Assert(output.PressedCount == 0 && lines.Contains("키 뗌 VK 65") && lines.Contains("마우스 뗌 2"));
+    Assert(!lines.Contains("키 누름 VK 66"));
+}
+
 static async Task FastCursorRoundTrip()
 {
     Assert((int)CoordinateClickMode.Cursor == 0 && (int)CoordinateClickMode.WindowMessage == 1);

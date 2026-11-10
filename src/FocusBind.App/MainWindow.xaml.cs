@@ -9,6 +9,8 @@ using FocusBind.Win32;
 using FocusBind.Win32.Input;
 using FocusBind.Core.Input;
 using FocusBind.Core.Profiles;
+using FocusBind.Core.Coordinates;
+using FocusBind.Core.Overlay;
 
 namespace FocusBind.App;
 
@@ -28,6 +30,20 @@ public partial class MainWindow : Window
     private int _openEditors;
     private bool _transferringProfiles;
     private readonly DispatcherTimer _runtimeStatusTimer;
+    private readonly DispatcherTimer _overlayTimer;
+    private readonly ShortcutOverlaySettingsStore _overlayStore = new(Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "FocusBind", "overlay.json"));
+    private ShortcutOverlaySettings _overlaySettings = new();
+    private ShortcutOverlayWindow? _overlayWindow;
+    private ProfileDocument? _runtimeDocument;
+    private ProfileDocument? _overlayDocument;
+    private CoordinateContextManager? _overlayCoordinates;
+    private CoordinateContext? _lastOverlayContext;
+    private Guid _overlayProfileId;
+    private nint _overlayTarget;
+    private bool _overlayFaulted;
+    private bool _closing;
+    private string? _overlayError;
     private readonly ProfileStore _store = new(Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "FocusBind", "profiles.json"));
 
@@ -40,16 +56,136 @@ public partial class MainWindow : Window
         _runtimeStatusTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(500) };
         _runtimeStatusTimer.Tick += (_, _) => RefreshRuntimeStatus();
         _runtimeStatusTimer.Start();
+        _overlayTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(150) };
+        _overlayTimer.Tick += (_, _) => RefreshShortcutOverlay();
+        _overlayTimer.Start();
         Activated += (_, _) => RefreshWindows();
-        Closed += (_, _) => { _shortcuts?.Dispose(); _shortcutLog.Dispose(); _runtimeStatusTimer.Stop(); _rawKeyboard?.Dispose(); _runtime?.Dispose(); _watcher.Dispose(); };
+        Closed += (_, _) =>
+        {
+            _closing = true; _overlayTimer.Stop(); _overlayWindow?.Close(); _overlayWindow = null;
+            _shortcuts?.Dispose(); _shortcutLog.Dispose(); _runtimeStatusTimer.Stop(); _rawKeyboard?.Dispose(); _runtime?.Dispose(); _watcher.Dispose();
+        };
         ShowSnapshot(WindowInspector.GetForeground(), "현재 포커스");
         RefreshWindows();
+        try { _overlaySettings = _overlayStore.Load(); }
+        catch (Exception ex) { _overlayError = $"오버레이 설정 읽기 실패: {ex.Message}"; }
+        ShowOverlaySettingsSummary();
+        Loaded += async (_, _) => await ReloadOverlayProfilesAsync();
     }
 
     private void OnWindowChanged(WindowChange change)
     {
-        Dispatcher.BeginInvoke(() => ShowSnapshot(change.Window,
-            change.Kind == WindowChangeKind.Foreground ? "포커스 변경" : "위치·크기 변경"));
+        if (_closing) return;
+        Dispatcher.BeginInvoke(() =>
+        {
+            if (_closing) return;
+            ShowSnapshot(change.Window, change.Kind == WindowChangeKind.Foreground ? "포커스 변경" : "위치·크기 변경");
+            RefreshShortcutOverlay();
+        });
+    }
+
+    private void OverlaySettings_Click(object sender, RoutedEventArgs e)
+    {
+        new OverlaySettingsWindow(_overlaySettings, settings =>
+        {
+            _overlayStore.Save(settings);
+            _overlaySettings = settings; _overlayFaulted = false; _overlayError = null;
+            _lastOverlayContext = null;
+            ShowOverlaySettingsSummary(); RefreshShortcutOverlay();
+            _ = ReloadOverlayProfilesAsync();
+        }, WindowInspector.ListTopLevelWindows()) { Owner = this }.ShowDialog();
+    }
+
+    private async Task ReloadOverlayProfilesAsync()
+    {
+        try
+        {
+            var document = await _store.LoadAsync();
+            if (_closing) return;
+            _overlayDocument = document;
+            HideShortcutOverlay(true); RefreshShortcutOverlay();
+        }
+        catch (Exception ex)
+        {
+            if (_closing) return;
+            _overlayDocument = null; HideShortcutOverlay(true);
+            _overlayError = $"오버레이 프로필 읽기 실패: {ex.Message}"; ShowOverlaySettingsSummary();
+        }
+    }
+
+    private async Task ToggleOverlayAsync()
+    {
+        try
+        {
+            if (_overlaySettings.TargetProcess is null)
+                throw new InvalidOperationException("오버레이 설정에서 대상 프로세스를 먼저 선택하세요.");
+            var settings = new ShortcutOverlaySettings { Enabled = !_overlaySettings.Enabled,
+                TransparencyPercent = _overlaySettings.TransparencyPercent, TargetProcess = _overlaySettings.TargetProcess };
+            _overlayStore.Save(settings);
+            _overlaySettings = settings; _overlayFaulted = false; _overlayError = null;
+            _lastOverlayContext = null; ShowOverlaySettingsSummary(); RefreshShortcutOverlay();
+            if (settings.Enabled) await ReloadOverlayProfilesAsync();
+        }
+        catch (Exception ex)
+        { _overlayError = $"오버레이 전환 실패: {ex.Message}"; ShowOverlaySettingsSummary(); RuntimeStatusText.Text = _overlayError; }
+    }
+
+    private void ShowOverlaySettingsSummary()
+    {
+        OverlaySettingsButton.Content = _overlayFaulted ? "오버레이 오류 · 설정" : _overlaySettings.Enabled
+            ? $"오버레이: 켜짐 · 투명도 {_overlaySettings.TransparencyPercent}%" : "오버레이: 꺼짐";
+        OverlaySettingsButton.ToolTip = _overlayError ?? $"대상: {_overlaySettings.TargetProcess?.ExecutableName ?? "미선택"} · 프로세스와 투명도 설정";
+    }
+
+    private void HideShortcutOverlay(bool reset = false)
+    {
+        if (_overlayWindow?.IsVisible == true) _overlayWindow.Hide();
+        _lastOverlayContext = null;
+        if (reset) { _overlayCoordinates = null; _overlayTarget = 0; _overlayProfileId = Guid.Empty; }
+    }
+
+    private void RefreshShortcutOverlay()
+    {
+        if (_closing || _overlayFaulted) return;
+        try
+        {
+            var document = _runtimeDocument ?? _overlayDocument;
+            if (_openEditors > 0 || _transferringProfiles || !_overlaySettings.Enabled || _overlaySettings.TransparencyPercent == 100 ||
+                document is null || _overlaySettings.TargetProcess is null)
+            { HideShortcutOverlay(true); return; }
+            var target = WindowInspector.GetForeground();
+            if (target is not { CanReceiveInput: true } || target.ProcessId == Environment.ProcessId)
+            { HideShortcutOverlay(true); return; }
+            var matches = _overlaySettings.TargetProcess.Matches(target.Identity);
+            var profile = matches ? ProfileResolver.Resolve(document, target.Identity) : null;
+            if (!ShortcutOverlayLayout.ShouldShow(_overlaySettings, target.CanReceiveInput, matches, profile is not null))
+            { HideShortcutOverlay(true); return; }
+            if (profile is null) return;
+            if (_overlayTarget != target.Handle || _overlayProfileId != profile.Id)
+            {
+                _overlayTarget = target.Handle; _overlayProfileId = profile.Id;
+                _overlayCoordinates = new CoordinateContextManager(profile); _lastOverlayContext = null;
+            }
+            var bounds = target.ClientBounds;
+            _overlayCoordinates!.Update(new PixelRect(bounds.X, bounds.Y, bounds.Width, bounds.Height),
+                target.Dpi, true, Environment.TickCount64);
+            if (!_overlayCoordinates.TryGet(Environment.TickCount64, out var context) || context is null)
+            { HideShortcutOverlay(); return; }
+            if (ReferenceEquals(context, _lastOverlayContext) && _overlayWindow?.MatchesBounds(context.Client) == true) return;
+            var hints = ShortcutOverlayLayout.Build(profile, context);
+            if (hints.Count == 0) { HideShortcutOverlay(); return; }
+            _overlayWindow ??= new ShortcutOverlayWindow();
+            _overlayWindow.Present(profile.Name, context, hints, _overlaySettings.Opacity);
+            _lastOverlayContext = context;
+        }
+        catch (Exception ex)
+        {
+            try { HideShortcutOverlay(true); _overlayWindow?.Close(); }
+            catch { /* Overlay cleanup must not interrupt the input runtime. */ }
+            _overlayWindow = null;
+            _overlayFaulted = true; _overlayError = $"오버레이 표시 실패: {ex.Message}";
+            ShowOverlaySettingsSummary();
+        }
     }
 
     private void ShowSnapshot(WindowSnapshot? window, string reason)
@@ -90,7 +226,7 @@ public partial class MainWindow : Window
         _shortcuts = new GlobalShortcuts(HwndSource.FromHwnd(new WindowInteropHelper(this).Handle)!);
         _shortcuts.Invoked += HandleShortcut;
         ShortcutStatusText.ToolTip = $"단축키 진단 로그: {_shortcutLog.Path}";
-        try { _shortcutBindings = GlobalShortcuts.Load(); _shortcuts.Apply(_shortcutBindings); ShowShortcutSummary(); _shortcutLog.Write("shortcuts registered count=4"); }
+        try { _shortcutBindings = GlobalShortcuts.Load(); _shortcuts.Apply(_shortcutBindings); ShowShortcutSummary(); _shortcutLog.Write($"shortcuts registered count={_shortcutBindings.Count}"); }
         catch (Exception ex) { _shortcutLog.Write($"registration failed {ex}"); ShortcutStatusText.Text = $"단축키 설정/등록 실패: {ex.Message}"; }
     }
 
@@ -135,6 +271,7 @@ public partial class MainWindow : Window
     private void HandleShortcut(ShortcutAction action)
     {
         _shortcutLog.Write($"shortcut received action={action}");
+        if (action == ShortcutAction.OverlayToggle) { _ = ToggleOverlayAsync(); return; }
         if (action == ShortcutAction.MappingToggle) { InputToggle_Click(this, new RoutedEventArgs()); return; }
         try
         {
@@ -191,7 +328,8 @@ public partial class MainWindow : Window
         }
         var editor = new BindingEditorWindow(current) { Owner = this };
         _openEditors++;
-        editor.Closed += (_, _) => _openEditors--;
+        HideShortcutOverlay(true);
+        editor.Closed += async (_, _) => { _openEditors--; if (_openEditors == 0) await ReloadOverlayProfilesAsync(); };
         editor.Show();
     }
 
@@ -215,6 +353,9 @@ public partial class MainWindow : Window
                 return;
             }
             _runtime = new InputRuntime(document);
+            _runtimeDocument = document;
+            _overlayDocument = document;
+            HideShortcutOverlay(true);
             try
             {
                 _rawKeyboard = new RawKeyboardInputSink(this);
@@ -231,6 +372,7 @@ public partial class MainWindow : Window
             PauseButton.Content = _runtime.IsPaused ? "재개" : "일시정지";
             RuntimeStatusText.Text = _runtime.IsPaused ? "입력 매핑: 일시정지" :
                 "입력 매핑: 활성화 · 포커스된 대상 창에서만 실행";
+            RefreshShortcutOverlay();
         }
         catch (Exception ex) { RuntimeStatusText.Text = $"매핑 시작 실패: {ex.Message}"; }
         finally { _startingRuntime = false; }
@@ -238,6 +380,7 @@ public partial class MainWindow : Window
 
     private void StopRuntime(string status)
     {
+        _runtimeDocument = null;
         _rawKeyboard?.Dispose();
         _rawKeyboard = null;
         _runtime?.Dispose();
@@ -246,6 +389,7 @@ public partial class MainWindow : Window
         PauseButton.IsEnabled = false;
         PauseButton.Content = "일시정지";
         RuntimeStatusText.Text = status;
+        RefreshShortcutOverlay();
     }
 
     private void PauseButton_Click(object sender, RoutedEventArgs e)
@@ -256,6 +400,7 @@ public partial class MainWindow : Window
         PauseButton.Content = _runtime.IsPaused ? "재개" : "일시정지";
         RuntimeStatusText.Text = _runtime.IsPaused ? "입력 매핑: 일시정지" :
             "입력 매핑: 활성화 · 포커스된 대상 창에서만 실행";
+        RefreshShortcutOverlay();
     }
 
     private void RefreshRuntimeStatus()
@@ -364,6 +509,7 @@ public partial class MainWindow : Window
             }
             if (_runtime is not null) StopRuntime("프로필을 가져오는 동안 매핑을 중지합니다.");
             await _store.SaveAsync(result);
+            _overlayDocument = result;
             RuntimeStatusText.Text = $"프로필 {imported.Profiles.Count}개 가져오기 완료 · 매핑은 다시 시작하세요." +
                 (backup is null ? "" : $"\n이전 설정 백업: {backup}");
         }

@@ -17,9 +17,14 @@
                 </StackPanel>
             </DockPanel>
             <Border Background="#E6F4F0" BorderBrush="#CAE5DD" BorderThickness="1" CornerRadius="8" Padding="15,12" Margin="0,0,0,14">
-                <StackPanel><TextBlock Text="매핑 상태" Foreground="{StaticResource AccentBrush}" FontWeight="SemiBold" Margin="0,0,0,5"/>
+                <DockPanel>
+                    <Button x:Name="OverlaySettingsButton" DockPanel.Dock="Right" Content="오버레이: 꺼짐" Click="OverlaySettings_Click"
+                            Padding="8,3" Margin="16,0,0,0" VerticalAlignment="Center"/>
+                    <StackPanel>
+                    <TextBlock Text="매핑 상태" Foreground="{StaticResource AccentBrush}" FontWeight="SemiBold" Margin="0,0,0,5"/>
                     <TextBlock x:Name="RuntimeStatusText" TextWrapping="Wrap" Text="입력 매핑: 중지됨" MaxHeight="68" TextTrimming="CharacterEllipsis" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}"/>
-                </StackPanel>
+                    </StackPanel>
+                </DockPanel>
             </Border>
             <Border Style="{StaticResource Card}" Margin="0,0,0,14" Padding="16,14">
                 <Grid>

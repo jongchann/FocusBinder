@@ -6,7 +6,7 @@ using FocusBind.Core.Profiles;
 
 namespace FocusBind.App;
 
-internal enum ShortcutAction { MappingToggle, VolumeUp, VolumeDown, MuteToggle }
+internal enum ShortcutAction { MappingToggle = 0, VolumeUp = 1, VolumeDown = 2, MuteToggle = 3, OverlayToggle = 5 } // 4 was legacy mute-off.
 internal sealed class ShortcutBinding
 {
     public ShortcutAction Action { get; set; }
@@ -25,11 +25,23 @@ internal sealed class GlobalShortcuts : IDisposable
     internal static List<ShortcutBinding> Load()
     {
         if (!File.Exists(SettingsPath)) return Defaults();
-        var bindings = JsonSerializer.Deserialize<List<ShortcutBinding>>(File.ReadAllText(SettingsPath))
+        return Parse(File.ReadAllText(SettingsPath));
+    }
+    internal static List<ShortcutBinding> Parse(string json)
+    {
+        var bindings = JsonSerializer.Deserialize<List<ShortcutBinding>>(json)
             ?? throw new InvalidDataException("단축키 설정이 비어 있습니다.");
+        if (bindings.Any(b => b is null)) throw new InvalidDataException("단축키 설정에 빈 항목이 있습니다.");
         // The original numeric action 3 (mute on) becomes toggle; retire action 4 (mute off).
-        if (bindings.Count == 5 && bindings.Select(b => (int)b.Action).Order().SequenceEqual(new[] { 0, 1, 2, 3, 4 }))
-            bindings.RemoveAll(b => (int)b.Action == 4);
+        bindings.RemoveAll(b => (int)b.Action == 4);
+        if (!bindings.Any(b => b.Action == ShortcutAction.OverlayToggle))
+        {
+            // Preserve all user bindings; pick a free fallback if the new default is already taken.
+            var key = Enumerable.Range(0x79, 15).First(code => !bindings.Any(b => b.KeyCode == code &&
+                b.Modifiers == (ModifierKeys.Control | ModifierKeys.Alt)));
+            bindings.Add(new ShortcutBinding { Action = ShortcutAction.OverlayToggle, KeyCode = key });
+        }
+        Validate(bindings);
         return bindings;
     }
     internal static void Save(List<ShortcutBinding> bindings)
@@ -45,7 +57,7 @@ internal sealed class GlobalShortcuts : IDisposable
     internal GlobalShortcuts(HwndSource source) { _source = source; source.AddHook(Hook); }
     internal static void Validate(List<ShortcutBinding> bindings)
     {
-        if (bindings.Count != 4 || bindings.Select(b => b.Action).Distinct().Count() != 4 ||
+        if (bindings.Count != 5 || bindings.Select(b => b.Action).Distinct().Count() != 5 ||
             bindings.Any(b => !Enum.IsDefined(b.Action) || b.KeyCode is < 1 or > 255 || b.Modifiers == 0 || ((int)b.Modifiers & ~15) != 0) ||
             bindings.Select(b => (b.KeyCode, b.Modifiers)).Distinct().Count() != bindings.Count)
             throw new InvalidDataException("각 동작에 중복되지 않는 보조키 조합을 지정하세요.");
