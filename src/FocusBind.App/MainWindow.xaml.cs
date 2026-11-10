@@ -108,6 +108,8 @@ public partial class MainWindow : Window
         try
         {
             var enabled = DiagnosticLoggingBox.IsChecked == true;
+            // Disabling must take effect even if saving the preference fails (for example, on a full disk).
+            if (!enabled) DiagnosticLog.Configure(false);
             _loggingStore.Save(new DiagnosticLoggingSettings { Enabled = enabled });
             DiagnosticLog.Configure(enabled);
             UpdateLoggingUi();
@@ -115,7 +117,8 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             _updatingLoggingUi = true; DiagnosticLoggingBox.IsChecked = DiagnosticLog.IsEnabled; _updatingLoggingUi = false;
-            LoggingStatusText.Text = $"로그 설정 변경 실패: {ex.Message}";
+            UpdateLoggingUi();
+            LoggingStatusText.Text = $"로그 설정 저장 실패 (현재 기록: {(DiagnosticLog.IsEnabled ? "켜짐" : "꺼짐")}): {ex.Message}";
         }
     }
 
