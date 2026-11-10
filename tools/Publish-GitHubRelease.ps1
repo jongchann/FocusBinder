@@ -35,6 +35,7 @@ $checksums = Join-Path $directory 'SHA256SUMS.txt'
 if (!(Test-Path $archive) -or !(Test-Path $checksums)) { throw 'Build the release assets first.' }
 $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash.ToLowerInvariant()
 if ((Get-Content -Raw $checksums).Trim() -ne "$hash  $archiveName") { throw 'Asset checksum does not match.' }
+Add-Type -AssemblyName System.IO.Compression
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $zip = [IO.Compression.ZipFile]::OpenRead($archive)
 try {
