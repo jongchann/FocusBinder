@@ -31,6 +31,14 @@
 - 가져오기 입력 검증 후 기존 파일 백업, 원자적 저장. 현재 파일이 잘못된 JSON/스키마면 사용자 확인 후 가져온 파일로 복구한다. 편집기가 열려 있으면 가져오기/내보내기를 막고 가져오기 성공 후 매핑 재시작을 안내한다.
 - 기본 빌드 경고·오류 0, 테스트 20개 PASS. 파일 대화상자·백업·복구 확인창의 실제 화면 검증은 남았다. Lua는 보류, QA 빌드는 사용하지 않는다.
 
+## 최신 후속 작업: 첫 시험 배포 v0.1.0-preview.1 (2026-11-10)
+
+- 사용자 요청으로 Windows x64 self-contained 포터블 ZIP의 첫 시험 릴리스를 준비했다. 앱 Version=0.1.0-preview.1, Assembly/FileVersion=0.1.0.0. 설치 프로그램·자동 업데이트·서명은 이번 포터블 시험 배포에 포함하지 않는다.
+- tools/Build-Release.ps1이 Release/win-x64 publish, 런타임 포함 확인·x64 PE/버전 검사, 안내/릴리스 노트/런타임 라이선스/소스 커밋 manifest 추가, ZIP 생성·전체 파일 해시 비교, 압축 해제 패키지 smoke, SHA256SUMS 생성을 수행한다. 산출물은 artifacts/에만 기록하며 Git에서 제외한다.
+- 앱 --verify-package <report.json>은 메인 창·입력 훅·설정 읽기/쓰기·입력 주입 없이 리소스/좌표/편집기 생성을 검사한다. WPF 시작은 OnStartup에서 정상/검증 경로를 분리했다. 이 셸은 관리자 UAC 승인을 처리하지 못하므로 EXE CreateProcess 실패(740) 시 dotnet DLL 진입점으로 검사하며, System.Private.CoreLib와 PresentationFramework가 압축 해제 패키지 안에서 로드된 것까지 확인한다. 시스템 설치 런타임으로 대체되면 실패한다. 실제 UAC 승인·메인 UI 시작·게임 조작을 검증했다고 간주하지 않는다.
+- tools/Publish-GitHubRelease.ps1은 GCM 인증을 메모리에서만 읽어 source commit 일치/ZIP hash/clean tree를 확인하고 main·annotated tag를 푸시한다. GitHub draft에 ZIP·SHA256SUMS를 올리고 크기/서버 digest를 검사한 뒤 prerelease로 공개한다. 이미 공개된 동일 버전은 덮어쓰지 않는다.
+- 릴리스 노트는 docs/releases/v0.1.0-preview.1.md. 개발 기본 경로와 별도 QA 빌드 금지 원칙은 유지한다. 실제 게임·설치/업데이트/제거·배포 이름 충돌 검증 항목은 미완료로 남긴다.
+
 ## 최신 후속 작업: 프로세스 대상 오버레이와 토글 단축키 (2026-11-10)
 
 - 사용자 후속 요청으로 오버레이를 프로세스(실행 파일) 대상으로 바꿨다. 설정창에서 창이 있는 실행 프로세스 목록을 선택한다. 실행 파일 경로/이름을 overlay.json의 TargetProcess에 저장하고 PID/창 핸들은 저장하지 않는다. 동일 실행 파일의 여러 인스턴스/창 중 포커스된 창에 적용되며 재실행 후에도 이어진다. 읽을 수 있는 경로는 구분하고 보호된 창 등 경로가 없으면 파일 이름으로 비교한다. 저장된 프로세스가 꺼져 있어도 설정창에서 유지한다.

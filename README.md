@@ -1,5 +1,7 @@
 # FocusBind
 
+첫 시험 버전은 [v0.1.0-preview.1](https://github.com/jongchann/FocusBinder/releases/tag/v0.1.0-preview.1)입니다. Windows x64용 ZIP을 폴더 전체로 압축 해제하고 `FocusBind.App.exe`를 실행하세요. .NET 런타임이 포함되어 별도 설치가 필요하지 않습니다. [릴리스 노트](docs/releases/v0.1.0-preview.1.md)에 실행·업데이트·제거와 미검증 항목을 기록합니다.
+
 FocusBind 실행 파일은 항상 관리자 권한을 요청합니다. 실행 시 Windows UAC 확인을 승인하면 시작됩니다. 일반 실행은 `src/FocusBind.App/bin/Debug/net10.0-windows/FocusBind.App.exe`를 사용하세요.
 
 메인 화면과 키 바인딩 편집기는 공통 색상·버튼·입력 스타일을 사용합니다. 단축키와 프로필 관리는 항상 표시되며, 창 진단 정보는 펼쳐서 볼 수 있습니다. 각 창 상단의 **최소화** 버튼이나 Windows 제목 표시줄 버튼으로 작업 표시줄에 최소화하고, 작업 표시줄 아이콘을 눌러 복원합니다. 최소화 상태에서도 매핑과 전역 단축키는 유지됩니다.
@@ -32,7 +34,7 @@ $env:NUGET_PACKAGES = Join-Path (Get-Location) '.packages'
 .\.dotnet\dotnet.exe run --project src\FocusBind.App --no-restore
 ```
 
-빌드와 실행은 기본 출력 경로 `src/FocusBind.App/bin/Debug/net10.0-windows/FocusBind.App.exe`로 통일합니다. 사용자 요청으로 별도 QA 빌드는 사용하지 않습니다. 실행 중인 앱이 DLL을 잠그면 앱을 종료한 뒤 기본 경로에 다시 빌드합니다.
+개발 빌드와 실행은 기본 출력 경로 `src/FocusBind.App/bin/Debug/net10.0-windows/FocusBind.App.exe`로 통일합니다. 사용자 요청으로 별도 QA 빌드는 사용하지 않습니다. 배포용 패키지만 Release/win-x64로 빌드합니다. 실행 중인 앱이 DLL을 잠그면 앱을 종료한 뒤 기본 경로에 다시 빌드합니다.
 
 프로필 JSON의 현재 `schemaVersion`은 `1`입니다. 저장 시 검증 후 같은 폴더의 임시 파일에 기록하고 원자적으로 교체합니다. 알 수 없는 스키마 버전이나 잘못된 설정은 로드하지 않습니다. 아직 이전 버전 스키마가 없으므로 마이그레이션은 향후 스키마 변경 시 추가합니다.
 
@@ -99,3 +101,14 @@ $env:NUGET_PACKAGES = Join-Path (Get-Location) '.packages'
 오버레이 대상은 실행 파일 경로/이름으로 저장하므로 프로세스를 재시작하거나 같은 실행 파일의 다른 창으로 이동해도 적용됩니다. 같은 실행 파일의 여러 인스턴스 중 포커스된 창에 표시합니다. 경로를 읽을 수 없을 때는 실행 파일 이름으로 비교합니다. 선택할 프로세스는 표시 또는 최소화된 창이 있어야 하며 저장된 대상이 종료되어도 선택은 유지됩니다. 기존 오버레이 설정에는 대상이 없으므로 설정창에서 한 번 선택하세요.
 
 오버레이 토글 기본 단축키는 **Ctrl+Alt+F10**이며 메인 **전역 단축키 변경 → 대상 프로세스 오버레이 켜기/끄기**에서 바꿀 수 있습니다. 전환 후에도 대상과 투명도는 유지됩니다. 기존 설정이 F10을 사용 중이면 새 토글에 F11 이후 빈 조합을 지정하므로 현재 키는 메인의 전역 단축키 목록을 확인하세요. 이전 음소거 켜기/끄기 설정도 기존 토글 동작과 키를 보존해 읽습니다.
+
+### 배포 패키지 재현
+
+.NET 10 SDK와 NuGet 접근이 가능한 Windows에서 소스를 커밋한 뒤 다음을 실행합니다. 기존 ZIP을 덮어쓰지 않으므로 새 버전 또는 비어 있는 출력 경로를 사용하세요.
+
+```powershell
+./tools/Build-Release.ps1 -Version 0.1.0-preview.1 -OutputDirectory artifacts/releases
+./tools/Publish-GitHubRelease.ps1 -Version 0.1.0-preview.1 -AssetDirectory artifacts/releases
+```
+
+첫 명령은 self-contained ZIP·SHA256SUMS와 압축 해제 후 검증 결과를 만듭니다. 두 번째는 GCM에 로그인된 계정으로 main·태그를 푸시하고 GitHub 초안에 자산을 올린 뒤 검증이 끝나면 시험 릴리스를 공개합니다. 실행 권한이 있는 저장소에서만 사용하세요. 이미 게시된 버전은 덮어쓰지 않습니다. 첫 배포에는 설치 프로그램·자동 업데이트·디지털 서명이 없습니다.
