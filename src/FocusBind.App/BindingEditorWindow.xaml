@@ -119,6 +119,14 @@
                         <ComboBoxItem Content="휠 오른쪽"/>
                         <ComboBoxItem Content="휠 왼쪽"/>
                     </ComboBox>
+                    <TextBlock Text="입력 보조키 (여러 개 선택 가능)" Margin="0,2,0,5"/>
+                    <WrapPanel Margin="0,0,0,8">
+                        <CheckBox x:Name="TriggerCtrlBox" Content="Ctrl" Margin="0,0,10,4" Checked="TriggerModifiers_Changed" Unchecked="TriggerModifiers_Changed"/>
+                        <CheckBox x:Name="TriggerAltBox" Content="Alt" Margin="0,0,10,4" Checked="TriggerModifiers_Changed" Unchecked="TriggerModifiers_Changed"/>
+                        <CheckBox x:Name="TriggerShiftBox" Content="Shift" Margin="0,0,10,4" Checked="TriggerModifiers_Changed" Unchecked="TriggerModifiers_Changed"/>
+                        <CheckBox x:Name="TriggerWinBox" Content="Win" Margin="0,0,0,4" Checked="TriggerModifiers_Changed" Unchecked="TriggerModifiers_Changed"/>
+                    </WrapPanel>
+                    <TextBlock x:Name="TriggerSummaryText" Foreground="#FF526579" TextWrapping="Wrap" Margin="0,0,0,8"/>
                     <Button x:Name="RecordTriggerButton" Content="다음 입력 기록" Padding="8,4" Margin="0,0,0,8"
                             Click="RecordTriggerButton_Click"/>
                     <StackPanel x:Name="KeyCapturePanel">
@@ -161,6 +169,13 @@
                             <ComboBoxItem Content="오른쪽"/>
                             <ComboBoxItem Content="왼쪽"/>
                         </ComboBox>
+                        <TextBlock Text="출력 보조키 (예: Ctrl + 휠 위/아래)" Margin="0,0,0,5" TextWrapping="Wrap"/>
+                        <WrapPanel Margin="0,0,0,8">
+                            <CheckBox x:Name="WheelCtrlBox" Content="Ctrl" Margin="0,0,10,4" Checked="WheelModifiers_Changed" Unchecked="WheelModifiers_Changed"/>
+                            <CheckBox x:Name="WheelAltBox" Content="Alt" Margin="0,0,10,4" Checked="WheelModifiers_Changed" Unchecked="WheelModifiers_Changed"/>
+                            <CheckBox x:Name="WheelShiftBox" Content="Shift" Margin="0,0,10,4" Checked="WheelModifiers_Changed" Unchecked="WheelModifiers_Changed"/>
+                            <CheckBox x:Name="WheelWinBox" Content="Win" Margin="0,0,0,4" Checked="WheelModifiers_Changed" Unchecked="WheelModifiers_Changed"/>
+                        </WrapPanel>
                         <TextBlock Text="스크롤 양 (1~12000, 한 칸 = 120)" TextWrapping="Wrap"/>
                         <TextBox x:Name="WheelAmountBox" Text="120" Margin="0,4,0,8" LostFocus="WheelAmountBox_LostFocus"/>
                         <TextBlock Text="현재 커서 위치에서 휠을 보냅니다. 대상 창 위에 커서를 두세요. 확대·축소 동작은 대상 앱의 휠 설정에 따릅니다."
@@ -175,7 +190,36 @@
                     <StackPanel x:Name="CoordinateSettings">
                     <Border Height="1" Background="#FFE0E6EE" Margin="0,20,0,20"/>
                     <TextBlock Text="클릭 위치" FontWeight="SemiBold"/>
-                    <TextBlock x:Name="CoordinateText" Foreground="#FF526579" Margin="0,6,0,0"/>
+                    <TextBlock Text="좌표 기준" Margin="0,10,0,4"/>
+                    <ComboBox x:Name="CoordinateSpaceCombo" SelectionChanged="CoordinateSpaceCombo_SelectionChanged">
+                        <ComboBoxItem Content="콘텐츠 비율 (기존 방식)" Tag="1"/>
+                        <ComboBoxItem Content="모서리·중앙 기준 (고정 거리 px)" Tag="4"/>
+                        <ComboBoxItem Content="모서리·중앙 기준 (크기에 비례)" Tag="2"/>
+                        <ComboBoxItem Content="창 전체 비율" Tag="0"/>
+                        <ComboBoxItem Content="창 왼쪽 위 기준 고정 픽셀" Tag="3"/>
+                    </ComboBox>
+                    <StackPanel x:Name="AnchorSettings" Visibility="Collapsed" Margin="0,10,0,0">
+                        <TextBlock Text="기준점 (변경해도 현재 클릭 위치 유지)" TextWrapping="Wrap"/>
+                        <UniformGrid x:Name="CoordinateAnchorGrid" Rows="3" Columns="3" Margin="0,6,0,8">
+                            <RadioButton Content="↖ 좌상" Tag="0" GroupName="QuickAnchor" Checked="CoordinateAnchor_Checked" Margin="2,5"/>
+                            <RadioButton Content="↑ 위" Tag="1" GroupName="QuickAnchor" Checked="CoordinateAnchor_Checked" Margin="2,5"/>
+                            <RadioButton Content="↗ 우상" Tag="2" GroupName="QuickAnchor" Checked="CoordinateAnchor_Checked" Margin="2,5"/>
+                            <RadioButton Content="← 왼쪽" Tag="3" GroupName="QuickAnchor" Checked="CoordinateAnchor_Checked" Margin="2,5"/>
+                            <RadioButton Content="· 중앙" Tag="4" GroupName="QuickAnchor" Checked="CoordinateAnchor_Checked" Margin="2,5"/>
+                            <RadioButton Content="→ 오른쪽" Tag="5" GroupName="QuickAnchor" Checked="CoordinateAnchor_Checked" Margin="2,5"/>
+                            <RadioButton Content="↙ 좌하" Tag="6" GroupName="QuickAnchor" Checked="CoordinateAnchor_Checked" Margin="2,5"/>
+                            <RadioButton Content="↓ 아래" Tag="7" GroupName="QuickAnchor" Checked="CoordinateAnchor_Checked" Margin="2,5"/>
+                            <RadioButton Content="↘ 우하" Tag="8" GroupName="QuickAnchor" Checked="CoordinateAnchor_Checked" Margin="2,5"/>
+                        </UniformGrid>
+                        <TextBlock Text="거리 X / Y (px)"/>
+                        <Grid Margin="0,4,0,4">
+                            <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="10"/><ColumnDefinition/></Grid.ColumnDefinitions>
+                            <TextBox x:Name="CoordinateOffsetXBox" LostFocus="CoordinateOffsets_LostFocus" ToolTip="X: 오른쪽은 양수, 왼쪽은 음수"/>
+                            <TextBox x:Name="CoordinateOffsetYBox" Grid.Column="2" LostFocus="CoordinateOffsets_LostFocus" ToolTip="Y: 아래쪽은 양수, 위쪽은 음수"/>
+                        </Grid>
+                        <TextBlock x:Name="CoordinateAnchorHint" FontSize="11" Foreground="#FF637589" TextWrapping="Wrap"/>
+                    </StackPanel>
+                    <TextBlock x:Name="CoordinateText" Foreground="#FF526579" Margin="0,6,0,0" TextWrapping="Wrap"/>
                     <Button Content="화면에서 지점 선택" Padding="8,5" Margin="0,11,0,0" Click="CaptureCoordinate_Click"/>
                     <TextBlock Text="좌표 클릭 방식" Margin="0,11,0,4"/>
                     <ComboBox x:Name="ClickModeCombo" SelectionChanged="ClickModeCombo_SelectionChanged">
@@ -190,7 +234,7 @@
                                TextWrapping="Wrap" Margin="0,6,0,0"/>
                     <CheckBox x:Name="RestoreCursorBox" Content="클릭 후 커서 원위치" Margin="0,11,0,0"
                               Checked="RestoreCursorBox_Changed" Unchecked="RestoreCursorBox_Changed"/>
-                    <TextBlock Text="창 크기가 바뀌면 좌표를 다시 계산합니다." Foreground="#FF637589"
+                    <TextBlock Text="버튼이 모서리에 붙어 있으면 ‘고정 거리’를 사용하세요. 기준점은 콘텐츠 영역을 따르며, 마커를 드래그하거나 화면에서 지점을 선택해 거리를 정할 수 있습니다." Foreground="#FF637589"
                                Margin="0,12,0,0" TextWrapping="Wrap"/>
                     </StackPanel>
                 </StackPanel>

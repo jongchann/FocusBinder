@@ -8,6 +8,13 @@ namespace FocusBind.App;
 
 internal static class KeyNames
 {
+    internal static Key ResolveKey(KeyEventArgs e) => e.Key switch
+    {
+        Key.System => e.SystemKey,
+        Key.ImeProcessed => e.ImeProcessedKey,
+        Key.DeadCharProcessed => e.DeadCharProcessedKey,
+        _ => e.Key
+    };
     internal static string Format(int code, Modifiers modifiers, bool includeCode = true)
     {
         var parts = new List<string>();
@@ -31,13 +38,29 @@ internal static class KeyNames
         (Keyboard.Modifiers.HasFlag(System.Windows.Input.ModifierKeys.Shift) ? Modifiers.Shift : 0) |
         (Keyboard.Modifiers.HasFlag(System.Windows.Input.ModifierKeys.Alt) ? Modifiers.Alt : 0) |
         (Keyboard.Modifiers.HasFlag(System.Windows.Input.ModifierKeys.Windows) ? Modifiers.Windows : 0);
+
+    internal static string FormatTrigger(InputTrigger trigger, bool includeCode = true)
+    {
+        if (trigger.Kind == TriggerKind.Key) return Format(trigger.KeyCode, trigger.Modifiers, includeCode);
+        var parts = new List<string>();
+        if (trigger.Modifiers.HasFlag(Modifiers.Control)) parts.Add("Ctrl");
+        if (trigger.Modifiers.HasFlag(Modifiers.Alt)) parts.Add("Alt");
+        if (trigger.Modifiers.HasFlag(Modifiers.Shift)) parts.Add("Shift");
+        if (trigger.Modifiers.HasFlag(Modifiers.Windows)) parts.Add("Win");
+        parts.Add(trigger.Kind switch
+        {
+            TriggerKind.MouseButton => trigger.MouseButton switch { 1 => "마우스 왼쪽", 2 => "마우스 오른쪽", 3 => "마우스 가운데", 4 => "마우스 X1", _ => "마우스 X2" },
+            TriggerKind.VerticalWheel => trigger.WheelDirection == WheelDirection.Positive ? "휠 ↑" : "휠 ↓",
+            _ => trigger.WheelDirection == WheelDirection.Positive ? "휠 →" : "휠 ←"
+        });
+        return string.Join(" + ", parts);
+    }
 }
 
 public sealed class TriggerLabelConverter : IValueConverter
 {
     public object Convert(object value, Type targetType, object parameter, CultureInfo culture) => value is InputTrigger trigger
-        ? trigger.Kind == TriggerKind.Key ? KeyNames.Format(trigger.KeyCode, trigger.Modifiers)
-            : $"{trigger.Modifiers} · {trigger.Kind} · 버튼 {trigger.MouseButton} · {trigger.WheelDirection}"
+        ? KeyNames.FormatTrigger(trigger)
         : "";
     public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture) => throw new NotSupportedException();
 }

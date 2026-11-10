@@ -9,6 +9,7 @@ public sealed class DryRunOutput(Action<string> trace, PixelPoint? initialCursor
     private readonly HashSet<int> _keys = [];
     private readonly HashSet<int> _buttons = [];
     public int PressedCount => _keys.Count + _buttons.Count;
+    public bool IsKeyDown(int key) => _keys.Contains(key);
     public void KeyDown(int key) { _keys.Add(key); trace($"키 누름 VK {key}"); }
     public void KeyUp(int key) { _keys.Remove(key); trace($"키 뗌 VK {key}"); }
     public void KeyTap(int key) { KeyDown(key); KeyUp(key); }

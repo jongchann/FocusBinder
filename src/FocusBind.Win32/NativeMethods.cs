@@ -5,6 +5,7 @@ namespace FocusBind.Win32;
 
 internal static class NativeMethods
 {
+    [DllImport("user32.dll")] internal static extern short GetAsyncKeyState(int virtualKey);
     internal const uint EventSystemForeground = 0x0003;
     internal const uint EventObjectLocationChange = 0x800B;
     internal const uint WineventOutOfContext = 0;

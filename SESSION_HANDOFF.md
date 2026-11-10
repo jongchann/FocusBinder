@@ -1,5 +1,20 @@
 # FocusBind 세션 인계
 
+## v0.1.0-preview.3 배포 소스
+
+사용자가 배포와 README 개편을 요청했다. 이번 버전에는 preview.2 이후 변경(휠 조합키, IME 전역 키 편집, 프로필 충돌 병합, 모서리 고정 거리 UI, 매핑 토글 Ctrl+Alt+Z 기본값)을 모두 포함한다. 아래 미배포 표시는 이전 작업 시점의 이력이다. README를 기능·빠른 시작·기본 키 표·좌표/휠/오버레이·공유·진단·개발 순서로 재작성하고 예제 데이터 화면을 docs/images에 넣었다. 로컬 profiles/ 내보내기는 개인 경로를 포함할 수 있어 Git/패키지에서 제외했다. 개인 설정 파일은 변경하지 않았다. 배포는 소스 커밋 → self-contained ZIP/해시/압축 해제 smoke → main·태그 푸시 → GitHub 자산 검증 후 시험 릴리스 게시 순서다.
+
+## 매핑 전역 단축키 기본값 변경 (미배포)
+
+최신 요청으로 매핑 시작/종료 기본값은 Ctrl+Alt+Z(VK 90, 0x5A)다. 새 설치와 기본값 복원에 적용하며 기존 shortcuts.json은 덮어쓰지 않는다. 나머지 기본값 F7/F8/P/O는 유지한다. 아래 F6 기본값 기록은 이전 이력이다.
+
+## 모서리 고정 거리와 좌표 UI (미배포)
+
+- `CoordinateSpace.AnchoredPixelOffset` (새 enum 값 4): 콘텐츠의 3×3 앵커에서 물리 픽셀 오프셋을 유지한다. 기존 AnchoredOffset은 레이아웃 ScalePolicy에 따른 비례 거리로 유지한다.
+- 편집기 오른쪽에서 좌표 기준과 3×3 앵커, X/Y 거리를 설정한다. 위치 보존 변환 및 첫 전환의 가까운 앵커 자동 선택을 지원한다. 공통 CoordinateTransform.TryCapture(context,target,point)로 마커 드래그·실제 캡처가 공간/앵커를 없애던 문제를 해결했다.
+- 기존 `profiles/langrisser.json`과 사용자 설정은 자동 변환하지 않았다. 새 모드는 preview.2에서 읽지 못하므로 공유 시 새 빌드 필요.
+- 빌드 경고·오류 0, 핵심 테스트 45개 및 오프라인 WPF 검증 PASS. UI 렌더 `design-preview/editor-anchor.png` 확인. 실제 게임 리사이즈·DPI 검증은 남아 있다.
+
 ## 다음 작업 기준
 
 사용자 요청으로 [WORK_CHECKLIST.md](WORK_CHECKLIST.md)에 남은 작업을 우선순위별로 정리하고 구현/실제 검증을 구분했다. 후속 작업은 해당 문서의 항목 ID를 기준으로 진행·갱신한다. 소리 단축키와 화면 캡처 표시는 사용자 확인 완료이며 Lua는 보류, 기본 빌드 경로만 사용한다.
@@ -30,6 +45,29 @@
 - 메인 창에서 전체 프로필 JSON 내보내기와 복사본 추가 가져오기를 제공한다. `ProfileTransfer.Merge`는 입력을 복제하고 프로필/매핑 ID를 재발급하며 기존 UI·선택을 유지한다. 레이아웃 ID는 프로필 내부 범위이므로 유지한다.
 - 가져오기 입력 검증 후 기존 파일 백업, 원자적 저장. 현재 파일이 잘못된 JSON/스키마면 사용자 확인 후 가져온 파일로 복구한다. 편집기가 열려 있으면 가져오기/내보내기를 막고 가져오기 성공 후 매핑 재시작을 안내한다.
 - 기본 빌드 경고·오류 0, 테스트 20개 PASS. 파일 대화상자·백업·복구 확인창의 실제 화면 검증은 남았다. Lua는 보류, QA 빌드는 사용하지 않는다.
+
+## 최신 후속 작업: 사용자 전역 키를 제품 기본값으로 반영 (미배포)
+
+- 사용자 요청으로 실제 `%LOCALAPPDATA%/FocusBind/shortcuts.json`을 읽었다. Action 0/1/2/3/5의 VK는 117/118/119/80/79, Modifiers는 모두 6(Ctrl+Alt)이었다. 새 기본값은 매핑 F6, 음량+ F7, 음량- F8, 음소거 P, 오버레이 O다. 실제 설정 파일은 수정하지 않았다.
+- GlobalShortcuts.Defaults를 명시적 목록으로 바꾸어 새 설치 및 기본값 복원에 사용한다. 기존 설정은 덮어쓰지 않는다. 예전 설정에 오버레이 항목이 없으면 O를 우선 추가하고 기존 Ctrl+Alt+O가 점유된 경우 F10~F24 중 빈 조합을 사용한다.
+- 오프라인 WPF에서 실제 기본값 복원 버튼을 눌러 행의 Binding/체크박스/키 선택이 같은 기본값으로 돌아오는지 확인했다. 마이그레이션·충돌 대체 및 기존 설정 보존 검증도 유지했다. 기본 빌드 경고·오류 0. 공개 버전 v0.1.0-preview.2와 달리 이 기본값 변경도 아직 미배포다.
+
+## 최신 후속 작업: 전역 Ctrl+Alt+알파벳 기록 수정 (미배포 변경)
+
+- 전역 단축키 기록이 SystemKey만 풀고 ImeProcessedKey/DeadCharProcessedKey는 복원하지 않던 경로를 수정했다. KeyNames.ResolveKey를 기록 UI와 매핑 키 기록에서 공유하며 읽기 전용 기록란은 InputMethod 비활성화로 물리 키를 받는다. IME 텍스트 조합이 시스템 전체에서 비활성화되는 것은 아니다.
+- ShortcutEditorRow를 도입해 전역 기능 5개 각각 Ctrl/Alt/Shift/Win 체크박스와 키 목록(A~Z·0~9·F1~F24·그 외 유효 키)을 직접 선택할 수 있게 했다. 오른쪽 기록란도 유지하며 양쪽 입력이 같은 Binding을 갱신한다. 적용 전에는 원본을 변경하지 않는다. 작은 창에서는 행 목록만 스크롤하고 적용/취소/기본값 복원은 고정한다.
+- GlobalShortcuts.NativeModifiers를 분리해 Ctrl+Alt가 Win32 MOD_CONTROL|MOD_ALT|NOREPEAT(0x4003)로 변환되는지 검증한다. Save도 Validate를 통과해야 한다. 보조키 자체·IME 처리 키 등은 새 등록을 거부한다. 예전 파일에 VK_PROCESSKEY(229)가 있으면 다른 유효 설정은 보존한 채 편집에 불러오되 Apply에서 막고 해당 행을 다시 고르도록 안내한다. 사용자 shortcuts.json을 테스트로 덮어쓰지 않았다.
+- 오프라인 WPF에서 5개 기능×A~Z×IME/System/dead-key 이벤트를 합성해 올바른 VK와 Ctrl+Alt가 기록되는지, 직접 선택·JSON round-trip·초안 격리·중복 거부·옛 IME 키 보존/등록 차단을 확인했다. 기본/최소 크기 렌더링도 검토했다. 기본 빌드 경고·오류 0, Core 시나리오 43개 PASS.
+- 실제 데스크톱의 물리 입력 수신/OS 등록 충돌은 미검증이다. 공개 버전은 v0.1.0-preview.2이며 앞선 Ctrl+휠 UI와 이번 수정은 아직 커밋/배포 전이다.
+
+## 최신 후속 작업: Ctrl+휠 입력·출력 UI (미배포 변경)
+
+- 트리거 아래 입력 보조키 Ctrl/Alt/Shift/Win 체크박스와 항상 표시되는 조합 요약을 추가했다. 트리거 종류/방향 선택 시 보조키를 초기화하던 처리를 제거했다. 키 자체가 Ctrl/Shift 등의 보조키이면 그 키를 보조키 목록에서 빼 중복 매칭 불가를 방지한다. 입력 기록도 동일 UI로 동기화된다.
+- 마우스 휠 액션 아래 출력 보조키 체크박스를 추가했다. WheelChord.Wrap/TryRead가 기존 KeyDown(mods) → Wheel → reverse KeyUp(mods) 형식을 생성/인식한다. schemaVersion 1 유지, 기존·이전 앱에서도 실행 가능한 기존 액션만 사용한다. 방향/양 변경·저장 시 보조키를 보존하고 일반 시퀀스는 사용자 시퀀스로 유지한다.
+- 입력 목록·요약·무입력 테스트의 비키 트리거 표기를 Ctrl + 휠 ↑/↓ 등으로 정리했다. InputRuntime은 휠 콜백에서 GetAsyncKeyState의 보조키 스냅샷을 TriggerStateMachine에 전달한다. 포커스 전부터 Ctrl이 눌렸거나 키보드 훅이 누락되는 Unity 경로에서도 휠 조합 판정을 보완하며 자체 주입 이벤트 제외는 유지한다.
+- IInputOutput.IsKeyDown을 추가하고 실행기에서 이미 눌린 보조키의 KeyDown/짝 KeyUp을 건너뛴다. 실행기가 누른 키는 기존 ReleaseAll로 중단 시 해제한다. Native 출력은 GetAsyncKeyState, 모의 출력은 메모리 키 상태를 사용한다.
+- 기본 빌드 경고·오류 0, 자동 테스트 43개 PASS. Ctrl 위/아래·복합 키 정확 구분, 스냅샷 처리, 16개 보조키 조합의 저장/출력 순서, 물리 Ctrl 유지와 취소/포커스 상실/오류 시 해제를 확인했다. DesignPreview에서 실제 편집기의 입력/출력 조합·방향 변경·재선택·Commit 보존을 검사하고 editor-trigger-chord.png, editor-wheel-chord.png를 검토했다.
+- 공개 버전은 v0.1.0-preview.2이며 이번 변경은 아직 커밋/배포하지 않았다. 실제 게임 Ctrl+휠·원본 차단 검증은 미완료다. 사용자 요청 시 다음 버전을 별도 배포한다.
 
 ## 최신 후속 작업: 선택형 로그와 v0.1.0-preview.2 재배포
 

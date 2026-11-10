@@ -169,9 +169,10 @@ internal sealed class ActionListWindow : Window
             case ActionKind.CoordinateClick when draft.Coordinate is { } coordinate:
                 Choice("레이아웃", _profile.Layouts.Select(l => (l.Id, l.Name)), coordinate.LayoutId, value => coordinate.LayoutId = value);
                 Choice("좌표 공간", new[] { (CoordinateSpace.ClientNormalized, "창 비율 (0~1)"),
-                    (CoordinateSpace.ContentNormalized, "콘텐츠 비율 (0~1)"), (CoordinateSpace.AnchoredOffset, "앵커 기준 오프셋"),
+                    (CoordinateSpace.ContentNormalized, "콘텐츠 비율 (0~1)"), (CoordinateSpace.AnchoredOffset, "앵커 기준 거리 (창 크기에 비례)"),
+                    (CoordinateSpace.AnchoredPixelOffset, "앵커 기준 고정 거리 (px)"),
                     (CoordinateSpace.FixedClientPixel, "창 기준 고정 픽셀") }, coordinate.Space, value => coordinate.Space = value);
-                _form.Children.Add(new TextBlock { Text = "3×3 앵커 (앵커 기준 오프셋에서 사용)" });
+                _form.Children.Add(new TextBlock { Text = "3×3 앵커 (앵커 기준 거리에서 사용)" });
                 var anchorGrid = new UniformGrid { Rows = 3, Columns = 3, Margin = new Thickness(0, 4, 0, 12) };
                 var selectedAnchor = coordinate.Anchor;
                 var anchorLabels = new[] { "좌상", "상", "우상", "좌", "중앙", "우", "좌하", "하", "우하" };

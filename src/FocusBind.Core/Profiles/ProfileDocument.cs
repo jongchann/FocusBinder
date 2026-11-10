@@ -91,7 +91,7 @@ public sealed class AutomationAction
     public List<AutomationAction> ElseSteps { get; set; } = [];
 }
 
-public enum CoordinateSpace { ClientNormalized, ContentNormalized, AnchoredOffset, FixedClientPixel }
+public enum CoordinateSpace { ClientNormalized, ContentNormalized, AnchoredOffset, FixedClientPixel, AnchoredPixelOffset }
 public enum CoordinateClickMode { Cursor = 0, WindowMessage = 1, FastCursor = 2 }
 public enum Anchor { TopLeft, TopCenter, TopRight, MiddleLeft, Center, MiddleRight, BottomLeft, BottomCenter, BottomRight }
 public enum ScalePolicy { Stretch, UniformFit, UniformFill, NoScale }

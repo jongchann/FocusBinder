@@ -19,7 +19,7 @@ public static class TriggerConflictDetector
         return conflicts;
     }
 
-    private static bool SameTrigger(InputTrigger first, InputTrigger second) =>
+    public static bool SameTrigger(InputTrigger first, InputTrigger second) =>
         first.Kind == second.Kind && first.Phase == second.Phase && first.Modifiers == second.Modifiers &&
         (first.Kind switch
         {

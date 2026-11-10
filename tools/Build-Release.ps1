@@ -1,5 +1,5 @@
 param(
-    [string]$Version = '0.1.0-preview.2',
+    [string]$Version = '0.1.0-preview.3',
     [string]$OutputDirectory = "artifacts/releases/$Version",
     [string]$Dotnet = '.dotnet/dotnet.exe'
 )
@@ -31,6 +31,10 @@ $pe = [BitConverter]::ToInt32($bytes, 0x3c)
 if ([BitConverter]::ToUInt16($bytes, $pe + 4) -ne 0x8664) { throw 'Executable is not x64.' }
 if (!([Diagnostics.FileVersionInfo]::GetVersionInfo($exe).ProductVersion.StartsWith($Version))) { throw 'Executable version mismatch.' }
 Copy-Item -LiteralPath (Join-Path $root 'README.md') -Destination $package
+foreach ($document in @('TESTING.md', 'CHECKLIST.md', 'WORK_CHECKLIST.md')) {
+    Copy-Item -LiteralPath (Join-Path $root $document) -Destination $package
+}
+Copy-Item -LiteralPath (Join-Path $root 'docs') -Destination (Join-Path $package 'docs') -Recurse
 Copy-Item -LiteralPath (Join-Path $root "docs/releases/v$Version.md") -Destination (Join-Path $package 'RELEASE-NOTES.md')
 $licenses = Join-Path $package 'licenses'
 New-Item -ItemType Directory -Path $licenses -Force | Out-Null
@@ -47,8 +51,9 @@ FocusBind - Windows x64 portable preview
 1. Extract the entire ZIP. Keep all files together.
 2. Run FocusBind.App.exe and accept the administrator (UAC) prompt.
 3. Select a target window, edit/save mappings, close the editor, then start mapping.
+   Ctrl+Alt+Z starts/stops mapping. Existing saved hotkeys are preserved on upgrade.
 4. Overlay: open overlay settings, select the target process, and enable it.
-   Ctrl+Alt+F10 toggles the overlay; hotkeys can be changed in the main window.
+   Ctrl+Alt+O toggles the overlay; Ctrl+Alt+P toggles mute. Hotkeys can be changed in the main window.
 
 The .NET runtime is included. Settings stay in %LOCALAPPDATA%\FocusBind.
 Back up that folder before upgrading. Close the app before replacing files.

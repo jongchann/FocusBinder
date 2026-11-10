@@ -8,6 +8,7 @@ public interface IInputOutput
     void KeyDown(int virtualKey);
     void KeyUp(int virtualKey);
     void KeyTap(int virtualKey);
+    bool IsKeyDown(int virtualKey);
     void MouseDown(int button);
     void MouseUp(int button);
     void MouseClick(int button);
@@ -69,6 +70,8 @@ public sealed class InputActionRunner(IInputOutput output)
         timeout.CancelAfter(maxRunMilliseconds);
         await _serial.WaitAsync(timeout.Token);
         var executedCommands = 0;
+        var ownedKeys = new HashSet<int>();
+        var skippedKeyUps = new Dictionary<int, int>();
         try
         {
             await ExecuteSteps(sequence.Steps);
@@ -94,8 +97,15 @@ public sealed class InputActionRunner(IInputOutput output)
                 executedCommands++;
                 switch (action.Kind)
                 {
-                    case ActionKind.KeyDown: output.KeyDown(action.KeyCode); break;
-                    case ActionKind.KeyUp: output.KeyUp(action.KeyCode); break;
+                    case ActionKind.KeyDown:
+                        if (WheelChord.FlagForKey(action.KeyCode) != ModifierKeys.None && !ownedKeys.Contains(action.KeyCode) && output.IsKeyDown(action.KeyCode))
+                            skippedKeyUps[action.KeyCode] = skippedKeyUps.GetValueOrDefault(action.KeyCode) + 1;
+                        else { output.KeyDown(action.KeyCode); ownedKeys.Add(action.KeyCode); }
+                        break;
+                    case ActionKind.KeyUp:
+                        if (skippedKeyUps.GetValueOrDefault(action.KeyCode) > 0) skippedKeyUps[action.KeyCode]--;
+                        else { output.KeyUp(action.KeyCode); ownedKeys.Remove(action.KeyCode); }
+                        break;
                     case ActionKind.KeyTap: output.KeyTap(action.KeyCode); break;
                     case ActionKind.MouseDown: output.MouseDown(action.MouseButton); break;
                     case ActionKind.MouseUp: output.MouseUp(action.MouseButton); break;

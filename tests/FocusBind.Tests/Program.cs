@@ -54,6 +54,7 @@ var tests = new (string Name, Func<Task> Run)[]
     ("profile resolution", Resolution),
     ("protected window selections remain isolated", ProtectedSelections),
     ("profile import clones and preserves existing settings", ProfileImport),
+    ("profile import conflict merge, copy and skip preserve data", ProfileImportConflicts),
     ("untitled window has a readable label", UntitledWindowLabel),
     ("trigger state and paired suppression", TriggerState),
     ("release and custom long press timing", TriggerPhases),
@@ -61,10 +62,14 @@ var tests = new (string Name, Func<Task> Run)[]
     ("audio COM enumeration leaves other processes unchanged", AudioEnumeration),
     ("duplicate trigger detection", TriggerConflicts),
     ("coordinate scaling and bounds", Coordinates),
+    ("anchor pixel distances survive resize and capture preserves every space", AnchorPixelCoordinates),
     ("coordinate stabilization and virtual desktop", CoordinateStabilization),
     ("basic action execution and cancellation", BasicActions),
     ("nested repeats obey per-run command budget", CommandBudget),
     ("saved wheel mappings preserve direction and amount", WheelMappingPipeline),
+    ("wheel triggers distinguish modifier chords and physical snapshots", WheelModifierTriggers),
+    ("wheel chords round trip and execute in order", WheelChordRoundTrip),
+    ("wheel chord cancellation releases only injected modifiers", WheelChordSafety),
     ("fast cursor mode round trips and restores optionally", FastCursorRoundTrip),
     ("fast cursor mode cancels safely and respects user movement", FastCursorSafety),
     ("window matcher edits validate and round trip", WindowMatcherEditing),
@@ -325,6 +330,50 @@ static async Task ProfileImport()
     finally { File.Delete(path); }
 }
 
+static async Task ProfileImportConflicts()
+{
+    var existing = NewProfile("Conflict");
+    var current = new ProfileDocument { Profiles = [existing], Ui = new UiSettings { StartPaused = true } };
+    var incoming = System.Text.Json.JsonSerializer.Deserialize<Profile>(System.Text.Json.JsonSerializer.Serialize(existing))!;
+    incoming.Id = Guid.NewGuid(); incoming.Name = " conflict ";
+    incoming.Window.ExecutableName = "different.exe";
+    incoming.MaxRunMilliseconds = 1234;
+    incoming.Mappings[0].Id = Guid.NewGuid(); // Same trigger must keep the existing mapping.
+    incoming.Mappings[0].Name = "Must not replace";
+    var layout = incoming.Layouts[0]; layout.ReferenceWidth += 100;
+    var extra = new Mapping { Name = "New coordinate", Trigger = new InputTrigger { KeyCode = 0x5A }, Actions = new ActionSequence
+    {
+        Steps = [new AutomationAction { Kind = ActionKind.Conditional, Condition = "true", ElseSteps =
+            [new AutomationAction { Kind = ActionKind.CoordinateClick, Coordinate = new CoordinateTarget { LayoutId = layout.Id, X = 0.5, Y = 0.5 } }] }]
+    } };
+    incoming.Mappings.Add(extra);
+    var imported = new ProfileDocument { Profiles = [incoming] };
+    imported.WindowSelections.Add(new WindowSelection { ProfileId = incoming.Id, Window = incoming.Window });
+    var original = System.Text.Json.JsonSerializer.Serialize(imported);
+    Assert(ProfileTransfer.Conflicts(current, incoming).Single().Id == existing.Id);
+    var choices = new Dictionary<Guid, ProfileImportChoice> { [incoming.Id] = new(ProfileImportMode.Merge, existing.Id) };
+    var merged = ProfileTransfer.Merge(current, imported, choices);
+    var target = merged.Profiles.Single();
+    Assert(target.Id == existing.Id && target.Mappings.Count == existing.Mappings.Count + 1);
+    Assert(target.Mappings[0].Name == existing.Mappings[0].Name && target.MaxRunMilliseconds == existing.MaxRunMilliseconds);
+    Assert(merged.Ui.StartPaused && target.Window.ExecutableName == existing.Window.ExecutableName);
+    Assert(target.Layouts.Count == existing.Layouts.Count + 1 && target.Layouts.Count(l => l.IsDefault) == 1);
+    var coordinate = target.Mappings.Last().Actions.Steps.Single().ElseSteps.Single().Coordinate!;
+    Assert(coordinate.LayoutId != layout.Id && target.Layouts.Any(l => l.Id == coordinate.LayoutId && l.ReferenceWidth == layout.ReferenceWidth));
+    Assert(merged.WindowSelections.Single().ProfileId == target.Id && ProfileValidator.Validate(merged).Count == 0);
+    Assert(System.Text.Json.JsonSerializer.Serialize(imported) == original && existing.Mappings.Count == 1);
+    var repeated = ProfileTransfer.Merge(merged, imported, choices);
+    Assert(repeated.Profiles.Single().Mappings.Count == target.Mappings.Count && repeated.Profiles.Single().Layouts.Count == target.Layouts.Count);
+    choices[incoming.Id] = new(ProfileImportMode.Skip);
+    var skipped = ProfileTransfer.Merge(current, imported, choices);
+    Assert(skipped.Profiles.Count == 1 && skipped.WindowSelections.Count == 0);
+    choices[incoming.Id] = new(ProfileImportMode.Merge, Guid.NewGuid());
+    await Throws<ArgumentException>(() => Task.FromResult(ProfileTransfer.Merge(current, imported, choices)));
+    incoming.Name = existing.Name;
+    var copy = ProfileTransfer.Merge(ProfileTransfer.Merge(current, imported), imported);
+    Assert(copy.Profiles.Select(p => p.Name).Distinct(StringComparer.OrdinalIgnoreCase).Count() == 3);
+}
+
 static Task ProtectedSelections()
 {
     var first = NewProfile("First");
@@ -538,6 +587,50 @@ static Task Coordinates()
     Assert(LayoutSelector.Select(profile, 1920, 1080, out var outside).Id == narrow.Id && !outside);
     Assert(LayoutSelector.Select(profile, 800, 600, out outside).IsDefault && !outside);
     return Task.CompletedTask;
+}
+
+static async Task AnchorPixelCoordinates()
+{
+    var profile = NewProfile();
+    var layout = profile.Layouts.Single();
+    layout.ReferenceWidth = 1600; layout.ReferenceHeight = 900;
+    layout.Content = new NormalizedRect { X = 0.1, Y = 0.1, Width = 0.8, Height = 0.8 };
+    var small = new CoordinateContext(new PixelRect(-1800, 120, 1000, 700), 144, layout);
+    var large = new CoordinateContext(new PixelRect(-100, -500, 1900, 1000), 96, layout);
+    foreach (var anchor in Enum.GetValues<Anchor>())
+    foreach (var scale in Enum.GetValues<ScalePolicy>())
+    {
+        layout.Scale = scale;
+        var column = (int)anchor % 3; var row = (int)anchor / 3;
+        var target = new CoordinateTarget { LayoutId = layout.Id, Space = CoordinateSpace.AnchoredPixelOffset, Anchor = anchor,
+            X = column == 2 ? -80 : 80, Y = row == 2 ? -40 : 40 };
+        Assert(CoordinateTransform.TryResolve(small, target, out var a) && CoordinateTransform.TryResolve(large, target, out _));
+        Assert(CoordinateTransform.TryResolve(large, target, out var b));
+        double AnchorX(PixelRect r) => r.X + (column == 0 ? 0 : column == 1 ? r.Width / 2.0 : r.Width - 1);
+        double AnchorY(PixelRect r) => r.Y + (row == 0 ? 0 : row == 1 ? r.Height / 2.0 : r.Height - 1);
+        Assert(a.X - AnchorX(small.Content) == target.X && b.X - AnchorX(large.Content) == target.X);
+        Assert(a.Y - AnchorY(small.Content) == target.Y && b.Y - AnchorY(large.Content) == target.Y);
+        foreach (var space in Enum.GetValues<CoordinateSpace>())
+        {
+            var captured = new CoordinateTarget { LayoutId = layout.Id, Space = space, Anchor = anchor };
+            Assert(CoordinateTransform.TryCapture(small, captured, a));
+            Assert(captured.Space == space && captured.Anchor == anchor);
+            Assert(CoordinateTransform.TryResolve(small, captured, out var resolved) && resolved == a);
+        }
+    }
+    var invalid = new CoordinateTarget { LayoutId = layout.Id, Space = CoordinateSpace.AnchoredPixelOffset, X = 10, Y = 20 };
+    Assert(!CoordinateTransform.TryCapture(small, invalid, new PixelPoint(small.Client.X, small.Client.Y)) && invalid.X == 10 && invalid.Y == 20);
+    invalid.Anchor = Anchor.BottomRight; invalid.X = -80; invalid.Y = -40;
+    profile.Mappings[0].Actions.Steps = [new AutomationAction { Kind = ActionKind.CoordinateClick, Coordinate = invalid }];
+    var path = TempPath();
+    try
+    {
+        var store = new ProfileStore(path);
+        await store.SaveAsync(new ProfileDocument { Profiles = [profile] });
+        var loaded = (await store.LoadAsync()).Profiles.Single().Mappings[0].Actions.Steps.Single().Coordinate!;
+        Assert(loaded.Space == CoordinateSpace.AnchoredPixelOffset && loaded.Anchor == Anchor.BottomRight && loaded.X == -80 && loaded.Y == -40);
+    }
+    finally { File.Delete(path); }
 }
 
 static Task CoordinateStabilization()
@@ -837,6 +930,84 @@ static async Task DryRunCancellation()
     Assert(!lines.Contains("키 누름 VK 66"));
 }
 
+static Task WheelModifierTriggers()
+{
+    Mapping Make(WheelDirection direction, ModifierKeys modifiers, bool consume = true) => new() {
+        ConsumeOriginal = consume, Trigger = new InputTrigger { Kind = TriggerKind.VerticalWheel,
+            WheelDirection = direction, Modifiers = modifiers } };
+    var plain = Make(WheelDirection.Positive, ModifierKeys.None, false);
+    var up = Make(WheelDirection.Positive, ModifierKeys.Control);
+    var down = Make(WheelDirection.Negative, ModifierKeys.Control);
+    var combined = Make(WheelDirection.Positive, ModifierKeys.Control | ModifierKeys.Shift);
+    Mapping[] mappings = [plain, up, down, combined];
+    var state = new TriggerStateMachine();
+    InputEvent Wheel(WheelDirection direction) => new(TriggerKind.VerticalWheel, 0, true, direction, 10);
+    Assert(state.Process(Wheel(WheelDirection.Positive), mappings).FiredMappings.Single() == plain);
+    state.Process(new InputEvent(TriggerKind.Key, 0xA2, true, WheelDirection.None, 0), mappings);
+    var decision = state.Process(Wheel(WheelDirection.Positive), mappings);
+    Assert(decision.SuppressOriginal && decision.FiredMappings.Single() == up);
+    Assert(state.Process(Wheel(WheelDirection.Negative), mappings).FiredMappings.Single() == down);
+    state.Process(new InputEvent(TriggerKind.Key, 0xA0, true, WheelDirection.None, 0), mappings);
+    Assert(state.Process(Wheel(WheelDirection.Positive), mappings).FiredMappings.Single() == combined);
+    state.Reset(); // Ctrl was held before focus, or the keyboard hook did not receive it.
+    Assert(state.Process(Wheel(WheelDirection.Negative), mappings, ModifierKeys.Control).FiredMappings.Single() == down);
+    Assert(state.Process(Wheel(WheelDirection.Positive), mappings, ModifierKeys.Control | ModifierKeys.Alt).FiredMappings.Count == 0);
+    Assert(!state.Process(Wheel(WheelDirection.Positive), mappings, ModifierKeys.None).SuppressOriginal);
+    return Task.CompletedTask;
+}
+
+static async Task WheelChordRoundTrip()
+{
+    var path = TempPath();
+    try
+    {
+        var store = new ProfileStore(path);
+        for (var flags = 0; flags < 16; flags++)
+        {
+            var modifiers = (ModifierKeys)flags;
+            var profile = NewProfile("Wheel chord");
+            var mapping = profile.Mappings.Single();
+            mapping.Trigger = new InputTrigger { Kind = TriggerKind.VerticalWheel, WheelDirection = WheelDirection.Positive, Modifiers = modifiers };
+            mapping.Actions.Steps = WheelChord.Wrap(new AutomationAction { Kind = flags % 2 == 0 ? ActionKind.VerticalWheel : ActionKind.HorizontalWheel,
+                Amount = flags % 3 == 0 ? -240 : 240 }, modifiers);
+            await store.SaveAsync(new ProfileDocument { Profiles = [profile] });
+            var loaded = (await store.LoadAsync()).Profiles.Single().Mappings.Single();
+            Assert(loaded.Trigger.Modifiers == modifiers && WheelChord.TryRead(loaded.Actions.Steps, out var wheel, out var restored) && restored == modifiers);
+            var output = new RecordingOutput();
+            await new InputActionRunner(output).RunAsync(loaded.Actions, () => true, 1000, CancellationToken.None);
+            var expected = mapping.Actions.Steps.Select(a => a.Kind == ActionKind.KeyDown ? $"key down {a.KeyCode}" : a.Kind == ActionKind.KeyUp
+                ? $"key up {a.KeyCode}" : $"{(a.Kind == ActionKind.HorizontalWheel ? "horizontal" : "vertical")} wheel {a.Amount}").Append("release");
+            Assert(output.Events.SequenceEqual(expected) && output.PressedKeys.Count == 0);
+        }
+        var steps = WheelChord.Wrap(new AutomationAction { Kind = ActionKind.VerticalWheel, Amount = 120 }, ModifierKeys.Control);
+        steps.Add(new AutomationAction { Kind = ActionKind.Delay, DelayMilliseconds = 1 });
+        Assert(!WheelChord.TryRead(steps, out _, out _)); // Keep general sequences intact in the editor.
+    }
+    finally { if (File.Exists(path)) File.Delete(path); }
+}
+
+static async Task WheelChordSafety()
+{
+    var sequence = new ActionSequence { Steps = WheelChord.Wrap(new AutomationAction { Kind = ActionKind.VerticalWheel, Amount = -120 },
+        ModifierKeys.Control | ModifierKeys.Shift) };
+    var output = new RecordingOutput();
+    output.PhysicalKeys.Add(0x11);
+    await new InputActionRunner(output).RunAsync(sequence, () => true, 1000, CancellationToken.None);
+    Assert(output.Events.SequenceEqual(["key down 16", "vertical wheel -120", "key up 16", "release"]));
+    Assert(output.PhysicalKeys.Contains(0x11) && output.PressedKeys.Count == 0);
+    using var cancel = new CancellationTokenSource();
+    output = new RecordingOutput { OnKeyDown = _ => cancel.Cancel() };
+    await Throws<OperationCanceledException>(() => new InputActionRunner(output).RunAsync(sequence, () => true, 1000, cancel.Token));
+    Assert(!output.Events.Any(e => e.Contains("wheel")) && output.PressedKeys.Count == 0);
+    var focused = true;
+    output = new RecordingOutput { OnWheel = () => focused = false };
+    await Throws<OperationCanceledException>(() => new InputActionRunner(output).RunAsync(sequence, () => focused, 1000, CancellationToken.None));
+    Assert(output.Events.Contains("vertical wheel -120") && output.PressedKeys.Count == 0);
+    output = new RecordingOutput { OnWheel = () => throw new IOException("simulated output failure") };
+    await Throws<IOException>(() => new InputActionRunner(output).RunAsync(sequence, () => true, 1000, CancellationToken.None));
+    Assert(output.PressedKeys.Count == 0);
+}
+
 static async Task FastCursorRoundTrip()
 {
     Assert((int)CoordinateClickMode.Cursor == 0 && (int)CoordinateClickMode.WindowMessage == 1);
@@ -1071,10 +1242,14 @@ sealed class RecordingOutput : IInputOutput
     private PixelPoint _cursor = new(10, 10);
     public bool IgnoreMove { get; set; }
     public Action? OnMouseDown { get; set; }
+    public Action<int>? OnKeyDown { get; set; }
+    public Action? OnWheel { get; set; }
     public List<string> Events { get; } = [];
     public HashSet<int> PressedKeys { get; } = [];
+    public HashSet<int> PhysicalKeys { get; } = [];
+    public bool IsKeyDown(int virtualKey) => PressedKeys.Contains(virtualKey) || PhysicalKeys.Contains(virtualKey);
     public HashSet<int> PressedButtons { get; } = [];
-    public void KeyDown(int virtualKey) { PressedKeys.Add(virtualKey); Events.Add($"key down {virtualKey}"); }
+    public void KeyDown(int virtualKey) { PressedKeys.Add(virtualKey); Events.Add($"key down {virtualKey}"); OnKeyDown?.Invoke(virtualKey); }
     public void KeyUp(int virtualKey) { PressedKeys.Remove(virtualKey); Events.Add($"key up {virtualKey}"); }
     public void KeyTap(int virtualKey) => Events.Add($"key tap {virtualKey}");
     public void MouseDown(int button)
@@ -1085,7 +1260,7 @@ sealed class RecordingOutput : IInputOutput
     }
     public void MouseUp(int button) { PressedButtons.Remove(button); Events.Add($"mouse up {button}"); }
     public void MouseClick(int button) => Events.Add($"mouse click {button}");
-    public void Wheel(int amount, bool horizontal = false) => Events.Add($"{(horizontal ? "horizontal" : "vertical")} wheel {amount}");
+    public void Wheel(int amount, bool horizontal = false) { Events.Add($"{(horizontal ? "horizontal" : "vertical")} wheel {amount}"); OnWheel?.Invoke(); }
     public PixelPoint? GetCursorPosition() => _cursor;
     public void MoveTo(PixelPoint point)
     {

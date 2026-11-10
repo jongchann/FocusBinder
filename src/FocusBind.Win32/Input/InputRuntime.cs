@@ -281,7 +281,8 @@ public sealed class InputRuntime : IDisposable
             _hookGeneration = target.Generation;
         }
         var decision = _triggers.Process(input,
-            input.Kind == TriggerKind.Key && Volatile.Read(ref _rawKeyboardEnabled) != 0 ? target.HookMappings : target.Mappings);
+            input.Kind == TriggerKind.Key && Volatile.Read(ref _rawKeyboardEnabled) != 0 ? target.HookMappings : target.Mappings,
+            input.Kind is TriggerKind.VerticalWheel or TriggerKind.HorizontalWheel ? PhysicalModifiers() : null);
         if (decision.FiredMappings.Count > 0) Interlocked.Add(ref _matchedTriggers, decision.FiredMappings.Count);
         foreach (var mapping in decision.FiredMappings)
             _diagnostics.Write($"trigger fired mappingId={mapping.Id} suppressed={decision.SuppressOriginal}");
@@ -291,6 +292,15 @@ public sealed class InputRuntime : IDisposable
             return false;
         }
         return decision.SuppressOriginal;
+    }
+
+    private static ModifierKeys PhysicalModifiers()
+    {
+        bool Down(int code) => (NativeMethods.GetAsyncKeyState(code) & 0x8000) != 0;
+        return (Down(0x11) ? ModifierKeys.Control : ModifierKeys.None) |
+            (Down(0x12) ? ModifierKeys.Alt : ModifierKeys.None) |
+            (Down(0x10) ? ModifierKeys.Shift : ModifierKeys.None) |
+            (Down(0x5B) || Down(0x5C) ? ModifierKeys.Windows : ModifierKeys.None);
     }
 
     private void HandleTick(long now)

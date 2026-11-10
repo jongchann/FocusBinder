@@ -8,6 +8,7 @@ namespace FocusBind.Win32.Input;
 /// <summary>Foreground-only output primitive. The caller must verify the target before every action.</summary>
 public sealed class SendInputOutput : IInputOutput, IDisposable
 {
+    public bool IsKeyDown(int virtualKey) => (NativeMethods.GetAsyncKeyState(virtualKey) & 0x8000) != 0;
     private const uint InputMouse = 0;
     private const uint InputKeyboard = 1;
     private const uint KeyUpFlag = 0x0002;

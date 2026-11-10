@@ -1,4 +1,5 @@
 using System.IO;
+using System.Globalization;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
@@ -37,6 +38,7 @@ public partial class BindingEditorWindow : Window
     {
         _targetWindow = targetWindow;
         InitializeComponent();
+        InputMethod.SetIsInputMethodEnabled(KeyBox, false);
         SourceInitialized += (_, _) =>
         {
             _messageSource = HwndSource.FromHwnd(new WindowInteropHelper(this).Handle);
@@ -122,12 +124,7 @@ public partial class BindingEditorWindow : Window
         if (context is null) return;
         var point = new PixelPoint((int)Math.Round(Math.Clamp(x / _previewWidth, 0, 1) * (context.Client.Width - 1)),
             (int)Math.Round(Math.Clamp(y / _previewHeight, 0, 1) * (context.Client.Height - 1)));
-        var region = target.Space == CoordinateSpace.ContentNormalized ? context.Content : context.Client;
-        if (!CoordinateTransform.TryCapture(region, point, out var normalized)) return;
-        if (target.Space is not (CoordinateSpace.ClientNormalized or CoordinateSpace.ContentNormalized))
-            target.Space = CoordinateSpace.ClientNormalized;
-        target.X = normalized.X;
-        target.Y = normalized.Y;
+        if (!CoordinateTransform.TryCapture(context, target, point)) return;
         UpdateCoordinateText();
     }
 
@@ -304,6 +301,7 @@ public partial class BindingEditorWindow : Window
         TriggerTypeCombo.SelectedIndex = _selectedMapping is null ? 0 : TriggerOptionIndex(_selectedMapping.Trigger);
         KeyCapturePanel.Visibility = TriggerTypeCombo.SelectedIndex == 0 ? Visibility.Visible : Visibility.Collapsed;
         KeyBox.Text = _selectedMapping is null ? string.Empty : FormatTrigger(_selectedMapping.Trigger);
+        RefreshTriggerModifiers();
         UpdateTriggerPhaseInspector();
         ConsumeBox.IsChecked = _selectedMapping?.ConsumeOriginal ?? false;
         var repeat = _selectedMapping?.Actions.Steps.FirstOrDefault(a => a.Kind == ActionKind.Repeat);
@@ -315,6 +313,9 @@ public partial class BindingEditorWindow : Window
         WheelDirectionCombo.SelectedIndex = wheel?.Kind == ActionKind.HorizontalWheel
             ? (wheel.Amount < 0 ? 3 : 2) : (wheel?.Amount < 0 ? 1 : 0);
         WheelAmountBox.Text = Math.Abs((long)(wheel?.Amount ?? 120)).ToString();
+        var wheelModifiers = _selectedMapping is not null && WheelChord.TryRead(_selectedMapping.Actions.Steps, out _, out var modifiers)
+            ? modifiers : BindingModifiers.None;
+        SetModifierControls(wheelModifiers, WheelCtrlBox, WheelAltBox, WheelShiftBox, WheelWinBox);
         RepeatCountBox.Text = (repeat?.RepeatCount ?? 5).ToString();
         RepeatIntervalBox.Text = (repeat?.Steps.FirstOrDefault(a => a.Kind == ActionKind.Delay)?.DelayMilliseconds ?? 100).ToString();
         var coordinate = _selectedMapping is null ? null : FindCoordinateAction(_selectedMapping.Actions.Steps)?.Coordinate;
@@ -333,6 +334,7 @@ public partial class BindingEditorWindow : Window
     private static int BasicActionMode(ActionSequence? sequence)
     {
         if (sequence is null || sequence.Steps.Count == 0) return 3;
+        if (WheelChord.TryRead(sequence.Steps, out _, out _)) return 2;
         if (sequence.Steps.Count != 1) return 3;
         var step = sequence.Steps[0];
         if (step.Kind == ActionKind.CoordinateClick) return 0;
@@ -375,7 +377,7 @@ public partial class BindingEditorWindow : Window
         if (dialog.ShowDialog() != true) return;
         _selectedProfile.Layouts = dialog.Layouts;
         RefreshMappingInspector();
-        StatusText.Text = "레이아웃을 적용했습니다. 좌표 공간·3×3 앵커는 액션 목록 편집에서 선택할 수 있습니다. 변경사항을 저장하세요.";
+        StatusText.Text = "레이아웃을 적용했습니다. 오른쪽 클릭 위치 설정에서 좌표 기준과 3×3 기준점을 선택하세요. 변경사항을 저장하세요.";
     }
 
     private void MoveMappingUp_Click(object sender, RoutedEventArgs e) => MoveMapping(-1);
@@ -414,7 +416,7 @@ public partial class BindingEditorWindow : Window
 
     private void CommitInspector()
     {
-        CommitLongPressMilliseconds(); CommitWheelAmount();
+        CommitLongPressMilliseconds(); CommitWheelAmount(); CommitCoordinateOffsets();
         RepeatSettings_LostFocus(this, new RoutedEventArgs());
         if (_selectedMapping is not null) _selectedMapping.Name = MappingNameBox.Text.Trim();
     }
@@ -445,11 +447,12 @@ public partial class BindingEditorWindow : Window
         trigger.MouseButton = trigger.Kind == TriggerKind.MouseButton ? index : 0;
         trigger.WheelDirection = index is 6 or 8 ? WheelDirection.Positive :
             index is 7 or 9 ? WheelDirection.Negative : WheelDirection.None;
-        trigger.Modifiers = BindingModifiers.None;
+        if (trigger.Kind == TriggerKind.Key) trigger.Modifiers &= ~WheelChord.FlagForKey(trigger.KeyCode);
         if (trigger.Kind is TriggerKind.VerticalWheel or TriggerKind.HorizontalWheel)
             trigger.Phase = TriggerPhase.Press;
         KeyCapturePanel.Visibility = index == 0 ? Visibility.Visible : Visibility.Collapsed;
         KeyBox.Text = FormatTrigger(trigger);
+        RefreshTriggerModifiers();
         UpdateTriggerPhaseInspector();
         UpdateConflictStatus();
         MappingsList.Items.Refresh();
@@ -463,10 +466,48 @@ public partial class BindingEditorWindow : Window
         StatusText.Text = "편집기 안에서 다음 키, 마우스 버튼 또는 수직·수평 휠을 입력하세요.";
     }
 
+    private static BindingModifiers ReadModifierControls(CheckBox ctrl, CheckBox alt, CheckBox shift, CheckBox win) =>
+        (ctrl.IsChecked == true ? BindingModifiers.Control : BindingModifiers.None) |
+        (alt.IsChecked == true ? BindingModifiers.Alt : BindingModifiers.None) |
+        (shift.IsChecked == true ? BindingModifiers.Shift : BindingModifiers.None) |
+        (win.IsChecked == true ? BindingModifiers.Windows : BindingModifiers.None);
+
+    private static void SetModifierControls(BindingModifiers modifiers, CheckBox ctrl, CheckBox alt, CheckBox shift, CheckBox win)
+    {
+        ctrl.IsChecked = modifiers.HasFlag(BindingModifiers.Control); alt.IsChecked = modifiers.HasFlag(BindingModifiers.Alt);
+        shift.IsChecked = modifiers.HasFlag(BindingModifiers.Shift); win.IsChecked = modifiers.HasFlag(BindingModifiers.Windows);
+    }
+
+    private void RefreshTriggerModifiers()
+    {
+        var previous = _updatingInspector; _updatingInspector = true;
+        SetModifierControls(_selectedMapping?.Trigger.Modifiers ?? BindingModifiers.None, TriggerCtrlBox, TriggerAltBox, TriggerShiftBox, TriggerWinBox);
+        TriggerSummaryText.Text = _selectedMapping is null ? "" : FormatTrigger(_selectedMapping.Trigger);
+        _updatingInspector = previous;
+    }
+
+    private void TriggerModifiers_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_updatingInspector || _selectedMapping is null) return;
+        var trigger = _selectedMapping.Trigger;
+        trigger.Modifiers = ReadModifierControls(TriggerCtrlBox, TriggerAltBox, TriggerShiftBox, TriggerWinBox);
+        if (trigger.Kind == TriggerKind.Key) trigger.Modifiers &= ~WheelChord.FlagForKey(trigger.KeyCode);
+        RefreshTriggerInspector(); UpdateConflictStatus();
+    }
+
+    private void WheelModifiers_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_updatingInspector || _selectedMapping is null || SelectedWheelAction() is not { } wheel) return;
+        CommitWheelAmount();
+        _selectedMapping.Actions.Steps = WheelChord.Wrap(wheel,
+            ReadModifierControls(WheelCtrlBox, WheelAltBox, WheelShiftBox, WheelWinBox));
+        RefreshMappingInspector();
+    }
+
     private void Window_PreviewKeyDown(object sender, KeyEventArgs e)
     {
         if (!_recordingTrigger) return;
-        var key = e.Key == Key.System ? e.SystemKey : e.Key;
+        var key = KeyNames.ResolveKey(e);
         var code = KeyInterop.VirtualKeyFromKey(key);
         if (key == Key.Escape)
         {
@@ -546,6 +587,7 @@ public partial class BindingEditorWindow : Window
         TriggerTypeCombo.SelectedIndex = TriggerOptionIndex(_selectedMapping.Trigger);
         KeyCapturePanel.Visibility = _selectedMapping.Trigger.Kind == TriggerKind.Key ? Visibility.Visible : Visibility.Collapsed;
         KeyBox.Text = FormatTrigger(_selectedMapping.Trigger);
+        RefreshTriggerModifiers();
         UpdateTriggerPhaseInspector();
         _updatingInspector = false;
         MappingsList.Items.Refresh();
@@ -626,9 +668,8 @@ public partial class BindingEditorWindow : Window
         RefreshMappingInspector();
     }
 
-    private AutomationAction? SelectedWheelAction() => _selectedMapping?.Actions.Steps.Count == 1 &&
-        _selectedMapping.Actions.Steps[0].Kind is ActionKind.VerticalWheel or ActionKind.HorizontalWheel
-            ? _selectedMapping.Actions.Steps[0] : null;
+    private AutomationAction? SelectedWheelAction() => _selectedMapping is not null &&
+        WheelChord.TryRead(_selectedMapping.Actions.Steps, out var wheel, out _) ? wheel : null;
 
     private void WheelDirectionCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
@@ -674,9 +715,7 @@ public partial class BindingEditorWindow : Window
         return null;
     }
 
-    private static string FormatTrigger(InputTrigger trigger) =>
-        trigger.Kind == TriggerKind.Key ? KeyNames.Format(trigger.KeyCode, trigger.Modifiers) :
-        $"{trigger.Modifiers} + {trigger.Kind} · 버튼 {trigger.MouseButton} · {trigger.WheelDirection}";
+    private static string FormatTrigger(InputTrigger trigger) => KeyNames.FormatTrigger(trigger);
 
     private void UpdateConflictStatus()
     {
@@ -697,7 +736,7 @@ public partial class BindingEditorWindow : Window
     private void KeyBox_PreviewKeyDown(object sender, KeyEventArgs e)
     {
         if (_selectedMapping is null) return;
-        CaptureKey(e.Key == Key.System ? e.SystemKey : e.Key);
+        CaptureKey(KeyNames.ResolveKey(e));
         e.Handled = true;
     }
 
@@ -796,10 +835,88 @@ public partial class BindingEditorWindow : Window
     private void UpdateCoordinateText()
     {
         var coordinate = _selectedMapping is null ? null : FindCoordinateAction(_selectedMapping.Actions.Steps)?.Coordinate;
-        CoordinateText.Text = coordinate is null ? "좌표 액션 없음" : $"X {coordinate.X:P1} · Y {coordinate.Y:P1}";
+        var previous = _updatingInspector; _updatingInspector = true;
+        CoordinateSpaceCombo.IsEnabled = coordinate is not null;
+        CoordinateSpaceCombo.SelectedItem = CoordinateSpaceCombo.Items.Cast<ComboBoxItem>()
+            .FirstOrDefault(item => int.Parse(item.Tag.ToString()!) == (int)(coordinate?.Space ?? CoordinateSpace.ContentNormalized));
+        AnchorSettings.Visibility = coordinate is not null && IsAnchored(coordinate.Space) ? Visibility.Visible : Visibility.Collapsed;
+        foreach (var button in CoordinateAnchorGrid.Children.OfType<RadioButton>())
+            button.IsChecked = int.Parse(button.Tag.ToString()!) == (int)(coordinate?.Anchor ?? Anchor.Center);
+        CoordinateOffsetXBox.Text = coordinate?.X.ToString("0.########", CultureInfo.InvariantCulture) ?? "";
+        CoordinateOffsetYBox.Text = coordinate?.Y.ToString("0.########", CultureInfo.InvariantCulture) ?? "";
+        CoordinateAnchorHint.Text = coordinate?.Space == CoordinateSpace.AnchoredPixelOffset
+            ? "X: 오른쪽 + / 왼쪽 − · Y: 아래 + / 위 −\n예: 우하 기준 X −80, Y −40 → 오른쪽·아래에서 80px·40px 유지"
+            : "기준 레이아웃의 거리(px)이며 창 크기·레이아웃 배율에 따라 조정됩니다.";
+        _updatingInspector = previous;
+        CoordinateText.Text = coordinate is null ? "좌표 액션 없음" : IsAnchored(coordinate.Space)
+            ? $"기준점 거리 X {coordinate.X:0.##} · Y {coordinate.Y:0.##} px"
+            : coordinate.Space == CoordinateSpace.FixedClientPixel ? $"X {coordinate.X:0.##} · Y {coordinate.Y:0.##} px" : $"X {coordinate.X:P1} · Y {coordinate.Y:P1}";
         if (coordinate is not null && PreviewContext(coordinate) is { } context &&
             CoordinateTransform.TryResolve(context, coordinate, out var point))
-            CoordinateText.Text = $"창 상대 {point.X}, {point.Y} px · {context.Client.Width}×{context.Client.Height}";
+            CoordinateText.Text += $"\n창 상대 {point.X}, {point.Y} px · {context.Client.Width}×{context.Client.Height}";
+    }
+
+    private static bool IsAnchored(CoordinateSpace space) => space is CoordinateSpace.AnchoredOffset or CoordinateSpace.AnchoredPixelOffset;
+
+    private void CoordinateSpaceCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_updatingInspector || CoordinateSpaceCombo.SelectedItem is not ComboBoxItem item || _selectedMapping is null) return;
+        var coordinate = FindCoordinateAction(_selectedMapping.Actions.Steps)?.Coordinate;
+        if (coordinate is null) return;
+        ChangeCoordinateBasis(coordinate, (CoordinateSpace)int.Parse(item.Tag.ToString()!), coordinate.Anchor, true);
+    }
+
+    private void CoordinateAnchor_Checked(object sender, RoutedEventArgs e)
+    {
+        if (_updatingInspector || sender is not RadioButton button || _selectedMapping is null) return;
+        var coordinate = FindCoordinateAction(_selectedMapping.Actions.Steps)?.Coordinate;
+        if (coordinate is null || !IsAnchored(coordinate.Space)) return;
+        ChangeCoordinateBasis(coordinate, coordinate.Space, (Anchor)int.Parse(button.Tag.ToString()!), false);
+    }
+
+    private void ChangeCoordinateBasis(CoordinateTarget coordinate, CoordinateSpace space, Anchor anchor, bool autoAnchor)
+    {
+        var context = PreviewContext(coordinate);
+        if (context is null || !CoordinateTransform.TryResolve(context, coordinate, out var point))
+        {
+            StatusText.Text = "현재 클릭 위치가 영역 밖입니다. 먼저 마커나 화면에서 유효한 지점을 선택하세요.";
+            UpdateCoordinateText(); return;
+        }
+        if (autoAnchor && IsAnchored(space) && !IsAnchored(coordinate.Space))
+        {
+            var content = context.Content;
+            var column = Math.Clamp((int)((point.X - (double)content.X) / Math.Max(1, content.Width) * 3), 0, 2);
+            var row = Math.Clamp((int)((point.Y - (double)content.Y) / Math.Max(1, content.Height) * 3), 0, 2);
+            anchor = (Anchor)(row * 3 + column);
+        }
+        var converted = new CoordinateTarget { LayoutId = coordinate.LayoutId, Space = space, Anchor = anchor };
+        if (CoordinateTransform.TryCapture(context, converted, point))
+        {
+            coordinate.Space = space; coordinate.Anchor = anchor;
+            coordinate.X = converted.X; coordinate.Y = converted.Y;
+            StatusText.Text = "클릭 위치를 유지하며 좌표 기준을 바꿨습니다. 변경사항을 저장하세요.";
+        }
+        else StatusText.Text = "현재 위치를 선택한 좌표 기준으로 변환할 수 없습니다.";
+        UpdateCoordinateText(); DrawMarkers();
+    }
+
+    private void CoordinateOffsets_LostFocus(object sender, RoutedEventArgs e) => CommitCoordinateOffsets();
+
+    private void CommitCoordinateOffsets()
+    {
+        if (_updatingInspector || _selectedMapping is null) return;
+        var coordinate = FindCoordinateAction(_selectedMapping.Actions.Steps)?.Coordinate;
+        if (coordinate is null || !IsAnchored(coordinate.Space)) return;
+        if (double.TryParse(CoordinateOffsetXBox.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var x) && double.IsFinite(x) &&
+            double.TryParse(CoordinateOffsetYBox.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var y) && double.IsFinite(y))
+        {
+            coordinate.X = x; coordinate.Y = y;
+            if (PreviewContext(coordinate) is { } context && !CoordinateTransform.TryResolve(context, coordinate, out _))
+                StatusText.Text = "입력한 거리는 현재 창 영역 밖입니다. X·Y를 조정하세요. 영역 밖 클릭은 실행하지 않습니다.";
+            else StatusText.Text = "기준점 거리를 적용했습니다. 변경사항을 저장하세요.";
+        }
+        else StatusText.Text = "거리는 유한한 숫자로 입력하세요. 소수점은 . 을 사용합니다.";
+        UpdateCoordinateText(); DrawMarkers();
     }
 
     private void CaptureCoordinate_Click(object sender, RoutedEventArgs e)
@@ -823,16 +940,11 @@ public partial class BindingEditorWindow : Window
         }
         var context = new CoordinateContext(new PixelRect(snapshot.ClientBounds.X, snapshot.ClientBounds.Y,
             snapshot.ClientBounds.Width, snapshot.ClientBounds.Height), snapshot.Dpi, layout);
-        var region = coordinate.Space == CoordinateSpace.ContentNormalized ? context.Content : context.Client;
-        if (!CoordinateTransform.TryCapture(region, point, out var normalized))
+        if (!CoordinateTransform.TryCapture(context, coordinate, point))
         {
             StatusText.Text = "선택 지점이 현재 콘텐츠 영역 밖입니다.";
             return;
         }
-        coordinate.Space = coordinate.Space == CoordinateSpace.ContentNormalized
-            ? CoordinateSpace.ContentNormalized : CoordinateSpace.ClientNormalized;
-        coordinate.X = normalized.X;
-        coordinate.Y = normalized.Y;
         DrawMarkers();
         UpdateCoordinateText();
         StatusText.Text = "대상 창에서 클릭 지점을 선택했습니다. 저장을 누르면 반영됩니다.";

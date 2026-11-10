@@ -45,7 +45,8 @@ internal static class Program
             Console.WriteLine("Generated icon: 16–256 px");
             return;
         }
-        var appDirectory = Path.Combine(root, "src/FocusBind.App/bin/Debug/net10.0-windows");
+        var appDirectory = args.FirstOrDefault(arg => arg.StartsWith("--app-directory=", StringComparison.Ordinal))?["--app-directory=".Length..]
+            ?? Path.Combine(root, "src/FocusBind.App/bin/Debug/net10.0-windows");
         AssemblyLoadContext.Default.Resolving += (_, name) => File.Exists(Path.Combine(appDirectory, name.Name + ".dll"))
             ? AssemblyLoadContext.Default.LoadFromAssemblyPath(Path.Combine(appDirectory, name.Name + ".dll")) : null;
         var assembly = AssemblyLoadContext.Default.LoadFromAssemblyPath(Path.Combine(appDirectory, "FocusBind.App.dll"));
@@ -60,7 +61,7 @@ internal static class Program
             new { DisplayTitle = "대상 게임", DisplayProcessName = "Game.exe", ClientSize = "1920×1080", DisplayState = "표시 중" },
             new { DisplayTitle = "브라우저", DisplayProcessName = "Browser.exe", ClientSize = "1440×900", DisplayState = "표시 중" } };
         ((TextBlock)main.FindName("ResultCountText")).Text = "2개의 창";
-        ((TextBlock)main.FindName("ShortcutSummaryText")).Text = "매핑 시작 / 종료   Ctrl + Alt + F6 [VK 117 / 0x75]\n대상 창 음량 +5%   Ctrl + Alt + F7 [VK 118 / 0x76]\n대상 창 음량 -5%   Ctrl + Alt + F8 [VK 119 / 0x77]\n대상 창 음소거 토글   Ctrl + Alt + F9 [VK 120 / 0x78]";
+        ((TextBlock)main.FindName("ShortcutSummaryText")).Text = "매핑 시작 / 종료   Ctrl + Alt + Z [VK 90 / 0x5A]\n대상 창 음량 +5%   Ctrl + Alt + F7 [VK 118 / 0x76]\n대상 창 음량 -5%   Ctrl + Alt + F8 [VK 119 / 0x77]\n대상 창 음소거 토글   Ctrl + Alt + P [VK 80 / 0x50]\n대상 프로세스 오버레이   Ctrl + Alt + O [VK 79 / 0x4F]";
         var outputDirectory = Path.Combine(root, "design-preview");
         Directory.CreateDirectory(outputDirectory);
         Render(main, Path.Combine(outputDirectory, "main.png"), 1140, 850);
@@ -91,10 +92,167 @@ internal static class Program
         VerifyWheelEditor(assembly, outputDirectory);
         VerifyAdvancedEditors(assembly, outputDirectory);
         VerifyShortcutOverlay(assembly, outputDirectory);
+        VerifyShortcutRecording(assembly, outputDirectory);
+        VerifyProfileImport(assembly, outputDirectory);
+        VerifyAnchorEditor(assembly, outputDirectory);
         editor.Close(); main.Close(); app.Shutdown();
         Console.WriteLine("Rendered main, editor, and global shortcut settings.");
     }
     private static void IgnoreBindings<T>(List<T> bindings) { }
+    private static void VerifyAnchorEditor(Assembly assembly, string outputDirectory)
+    {
+        var snapshot = new WindowSnapshot(0, 0, 0, new WindowIdentity(@"C:\Games\Game.exe", "모서리 좌표 테스트", "UnityWndClass"),
+            new WindowBounds(0, 0, 1280, 720), 96, true, false, false);
+        var window = (Window)Activator.CreateInstance(assembly.GetType("FocusBind.App.BindingEditorWindow")!, snapshot)!;
+        var profile = new Profile { Name = "모서리 좌표", Window = new WindowMatcher { ExecutableName = "Game.exe" } };
+        var coordinate = new CoordinateTarget { LayoutId = profile.Layouts[0].Id, X = 0.9, Y = 0.9 };
+        var mapping = new Mapping { Name = "우하 버튼", Trigger = new InputTrigger { KeyCode = 65 },
+            Actions = new ActionSequence { Steps = [new AutomationAction { Kind = ActionKind.CoordinateClick, Coordinate = coordinate }] } };
+        profile.Mappings.Add(mapping);
+        var profiles = (ListBox)window.FindName("ProfilesList"); profiles.ItemsSource = new[] { profile }; profiles.SelectedIndex = 0;
+        var mode = (ComboBox)window.FindName("CoordinateSpaceCombo");
+        var grid = (System.Windows.Controls.Primitives.UniformGrid)window.FindName("CoordinateAnchorGrid");
+        var xBox = (TextBox)window.FindName("CoordinateOffsetXBox");
+        var yBox = (TextBox)window.FindName("CoordinateOffsetYBox");
+        var context = new CoordinateContext(new PixelRect(0, 0, 1280, 720), 96, profile.Layouts[0]);
+        void Check(bool condition) { if (!condition) throw new Exception("Anchor editor regression failed."); }
+        void Call(string name, params object[] args) => window.GetType().GetMethod(name, BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(window, args);
+        Check(CoordinateTransform.TryResolve(context, coordinate, out var initial));
+        mode.SelectedIndex = 1;
+        Check(coordinate.Space == CoordinateSpace.AnchoredPixelOffset && coordinate.Anchor == Anchor.BottomRight);
+        Check(CoordinateTransform.TryResolve(context, coordinate, out var converted) && initial == converted);
+        foreach (var button in grid.Children.OfType<RadioButton>())
+        {
+            button.IsChecked = true;
+            Check(CoordinateTransform.TryResolve(context, coordinate, out converted) && initial == converted);
+        }
+        xBox.Text = "-80"; yBox.Text = "-40";
+        xBox.RaiseEvent(new RoutedEventArgs(UIElement.LostFocusEvent));
+        Check(coordinate.X == -80 && coordinate.Y == -40 && coordinate.Anchor == Anchor.BottomRight);
+        Call("PlaceCoordinate", coordinate, 600.0, 320.0);
+        Check(coordinate.Space == CoordinateSpace.AnchoredPixelOffset && coordinate.Anchor == Anchor.BottomRight);
+        Check(CoordinateTransform.TryResolve(context, coordinate, out var moved) && moved.X > 1100 && moved.Y > 600);
+        var mappings = (ListBox)window.FindName("MappingsList"); mappings.SelectedIndex = -1; mappings.SelectedIndex = 0;
+        Check(mode.SelectedIndex == 1 && ((RadioButton)grid.Children[8]).IsChecked == true);
+        mode.SelectedIndex = 2;
+        Check(coordinate.Space == CoordinateSpace.AnchoredOffset && CoordinateTransform.TryResolve(context, coordinate, out converted) && converted == moved);
+        Call("PlaceCoordinate", coordinate, 580.0, 300.0);
+        Check(coordinate.Space == CoordinateSpace.AnchoredOffset && coordinate.Anchor == Anchor.BottomRight);
+        mode.SelectedIndex = 1;
+        xBox.Text = "bad"; xBox.RaiseEvent(new RoutedEventArgs(UIElement.LostFocusEvent));
+        Check(xBox.Text != "bad" && double.IsFinite(coordinate.X));
+        xBox.Text = "-80"; yBox.Text = "-40";
+        Call("CommitInspector");
+        Check(coordinate.X == -80 && coordinate.Y == -40 && coordinate.Space == CoordinateSpace.AnchoredPixelOffset);
+        Render(window, Path.Combine(outputDirectory, "editor-anchor.png"), 1080, 750);
+        ((StackPanel)window.FindName("AnchorSettings")).BringIntoView();
+        window.UpdateLayout();
+        Render(window, Path.Combine(outputDirectory, "editor-anchor.png"), 1080, 750);
+        window.Close();
+        Console.WriteLine("PASS corner anchor UI: position-preserving mode/anchor changes, offsets, drag, reselection and save (offline).");
+    }
+    private static void VerifyProfileImport(Assembly assembly, string outputDirectory)
+    {
+        Profile Profile() => new() { Name = "동일 이름 프로파일", Window = new WindowMatcher { ExecutableName = "Game.exe" } };
+        var current = new ProfileDocument { Profiles = [Profile(), Profile()] };
+        var imported = new ProfileDocument { Profiles = [Profile(), Profile(), Profile()] };
+        var type = assembly.GetType("FocusBind.App.ProfileImportWindow")!;
+        var window = (Window)Activator.CreateInstance(type, BindingFlags.Instance | BindingFlags.NonPublic, null, [current, imported], null)!;
+        var grid = (Grid)window.Content;
+        var rows = (StackPanel)grid.Children.OfType<ScrollViewer>().Single().Content;
+        var choices = (Dictionary<Guid, ProfileImportChoice>)type.GetProperty("Choices", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(window)!;
+        if (choices.Count != 0 || rows.Children.Count != 3) throw new Exception("Import must start with an isolated draft.");
+        for (var i = 0; i < 3; i++)
+        {
+            var combos = ((StackPanel)rows.Children[i]).Children.OfType<ComboBox>().ToArray();
+            if (combos[0].SelectedIndex != 0 || combos[1].IsEnabled) throw new Exception("Import must default to copy.");
+            combos[0].SelectedIndex = i;
+            if (combos[1].IsEnabled != (i == 1)) throw new Exception("Merge target enabled state is incorrect.");
+            if (i == 1) combos[1].SelectedIndex = 1;
+        }
+        Render(window, Path.Combine(outputDirectory, "profile-import.png"), 700, 600);
+        type.GetMethod("ReadChoices", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(window, null);
+        if (choices[imported.Profiles[0].Id].Mode != ProfileImportMode.Copy ||
+            choices[imported.Profiles[1].Id] != new ProfileImportChoice(ProfileImportMode.Merge, current.Profiles[1].Id) ||
+            choices[imported.Profiles[2].Id].Mode != ProfileImportMode.Skip) throw new Exception("Import choices or selected merge target were lost.");
+        window.Close();
+        Console.WriteLine("PASS profile import conflict UI: copy default, merge target selection, skip and draft isolation (offline).");
+    }
+    private static void VerifyShortcutRecording(Assembly assembly, string outputDirectory)
+    {
+        var shortcutType = assembly.GetType("FocusBind.App.GlobalShortcuts")!;
+        var defaults = shortcutType.GetMethod("Defaults", BindingFlags.Static | BindingFlags.NonPublic)!.Invoke(null, null)!;
+        var callbackType = typeof(Action<>).MakeGenericType(defaults.GetType());
+        var callback = typeof(Program).GetMethod(nameof(IgnoreBindings), BindingFlags.Static | BindingFlags.NonPublic)!
+            .MakeGenericMethod(assembly.GetType("FocusBind.App.ShortcutBinding")!).CreateDelegate(callbackType);
+        var dialog = (Window)Activator.CreateInstance(assembly.GetType("FocusBind.App.ShortcutSettingsWindow")!,
+            BindingFlags.Instance | BindingFlags.NonPublic, null, [defaults, callback], null)!;
+        var rows = (System.Collections.IList)dialog.GetType().GetField("_rows", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(dialog)!;
+        var bindings = dialog.GetType().GetProperty("Bindings", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(dialog)!;
+        void Check(bool value) { if (!value) throw new Exception("Global shortcut recording regression failed."); }
+        T Field<T>(object obj, string name) => (T)obj.GetType().GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(obj)!;
+        object Binding(object row) => row.GetType().GetProperty("Binding", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(row)!;
+        int Code(object row) => (int)Binding(row).GetType().GetProperty("KeyCode")!.GetValue(Binding(row))!;
+        var mods = ModifierKeys.Control | ModifierKeys.Alt;
+        using var source = new HwndSource(new HwndSourceParameters("FocusBind shortcut event verification") { WindowStyle = 0, Width = 1, Height = 1 });
+        foreach (var row in rows.Cast<object>())
+        {
+            var record = row.GetType().GetMethod("Record", BindingFlags.Instance | BindingFlags.NonPublic)!;
+            Check(!System.Windows.Input.InputMethod.GetIsInputMethodEnabled(Field<TextBox>(row, "CaptureBox")));
+            foreach (var code in Enumerable.Range(0x41, 26))
+            foreach (var marker in new[] { "MarkImeProcessed", "MarkSystem", "MarkDeadCharProcessed" })
+            {
+                var key = System.Windows.Input.KeyInterop.KeyFromVirtualKey(code);
+                var e = new System.Windows.Input.KeyEventArgs(System.Windows.Input.Keyboard.PrimaryDevice, source, Environment.TickCount, key)
+                    { RoutedEvent = System.Windows.Input.Keyboard.PreviewKeyDownEvent };
+                typeof(System.Windows.Input.KeyEventArgs).GetMethod(marker, BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(e, null);
+                record.Invoke(row, [e, mods]);
+                Check(Code(row) == code && e.Handled && Field<TextBox>(row, "CaptureBox").Text.Contains("Ctrl") &&
+                    Field<TextBox>(row, "CaptureBox").Text.Contains("Alt"));
+            }
+            var before = Code(row);
+            var bare = new System.Windows.Input.KeyEventArgs(System.Windows.Input.Keyboard.PrimaryDevice, source, 0, System.Windows.Input.Key.M)
+                { RoutedEvent = System.Windows.Input.Keyboard.PreviewKeyDownEvent };
+            record.Invoke(row, [bare, ModifierKeys.None]); Check(Code(row) == before);
+            Field<CheckBox>(row, "CtrlBox").IsChecked = true;
+            Field<CheckBox>(row, "AltBox").IsChecked = true;
+        }
+        var codes = new[] { 0x52, 0x55, 0x44, 0x4D, 0x4F };
+        for (var index = 0; index < rows.Count; index++)
+        {
+            var combo = Field<ComboBox>(rows[index]!, "KeyCombo");
+            combo.SelectedItem = combo.Items.Cast<ComboBoxItem>().Single(item => (int)item.Tag == codes[index]);
+            Check(Code(rows[index]!) == codes[index]);
+        }
+        shortcutType.GetMethod("Validate", BindingFlags.Static | BindingFlags.NonPublic)!.Invoke(null, [bindings]);
+        var native = (uint)shortcutType.GetMethod("NativeModifiers", BindingFlags.Static | BindingFlags.NonPublic)!.Invoke(null, [mods])!;
+        Check(native == 0x4003);
+        var validation = shortcutType.GetMethod("Validate", BindingFlags.Static | BindingFlags.NonPublic)!;
+        var duplicateCombo = Field<ComboBox>(rows[0]!, "KeyCombo");
+        duplicateCombo.SelectedItem = duplicateCombo.Items.Cast<ComboBoxItem>().Single(item => (int)item.Tag == 0x4D);
+        try { validation.Invoke(null, [bindings]); throw new Exception("Duplicate chord was accepted."); }
+        catch (TargetInvocationException ex) when (ex.InnerException is InvalidDataException) { }
+        duplicateCombo.SelectedItem = duplicateCombo.Items.Cast<ComboBoxItem>().Single(item => (int)item.Tag == codes[0]);
+        validation.Invoke(null, [bindings]);
+        var restored = (System.Collections.IList)shortcutType.GetMethod("Parse", BindingFlags.Static | BindingFlags.NonPublic)!
+            .Invoke(null, [System.Text.Json.JsonSerializer.Serialize(bindings)])!;
+        Check((int)restored[3]!.GetType().GetProperty("KeyCode")!.GetValue(restored[3])! == 0x4D);
+        var legacyJson = System.Text.Json.JsonSerializer.Serialize(bindings).Replace("\"KeyCode\":82", "\"KeyCode\":229");
+        var legacy = (System.Collections.IList)shortcutType.GetMethod("Parse", BindingFlags.Static | BindingFlags.NonPublic)!.Invoke(null, [legacyJson])!;
+        Check((int)legacy[0]!.GetType().GetProperty("KeyCode")!.GetValue(legacy[0])! == 229 &&
+            (int)legacy[3]!.GetType().GetProperty("KeyCode")!.GetValue(legacy[3])! == 0x4D);
+        try { validation.Invoke(null, [legacy]); throw new Exception("IME process key was registered."); }
+        catch (TargetInvocationException ex) when (ex.InnerException is InvalidDataException) { }
+        Check(((System.Collections.IList)defaults).Cast<object>().Select(b => (int)b.GetType().GetProperty("KeyCode")!.GetValue(b)!).SequenceEqual(new[] { 90, 118, 119, 80, 79 }));
+        var footer = ((Grid)dialog.Content).Children.OfType<StackPanel>().Last();
+        footer.Children.OfType<Button>().Single(b => b.Content.ToString() == "기본값 복원").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        Check(rows.Cast<object>().Select(Code).SequenceEqual(new[] { 90, 118, 119, 80, 79 }));
+        Check(rows.Cast<object>().All(row => Field<CheckBox>(row, "CtrlBox").IsChecked == true && Field<CheckBox>(row, "AltBox").IsChecked == true));
+        Render(dialog, Path.Combine(outputDirectory, "shortcuts.png"), 680, 760);
+        Render(dialog, Path.Combine(outputDirectory, "shortcuts-small.png"), 560, 500);
+        dialog.Close();
+        Console.WriteLine("PASS all global actions: Ctrl+Alt+A-Z IME/System/dead-key recording, direct selection, native flags, JSON round trip, draft isolation.");
+    }
     [DllImport("user32.dll")] private static extern int GetWindowLongW(nint window, int index);
     private static void VerifyShortcutOverlay(Assembly assembly, string outputDirectory)
     {
@@ -126,12 +284,15 @@ internal static class Program
         Check(migrated.Count == 5);
         var last = migrated[4]!;
         Check(Convert.ToInt32(last.GetType().GetProperty("Action")!.GetValue(last)) == 5);
-        Check((int)last.GetType().GetProperty("KeyCode")!.GetValue(last)! == 122); // F10 occupied: choose F11.
+        Check((int)last.GetType().GetProperty("KeyCode")!.GetValue(last)! == 79); // Use the configured default O.
+        var occupied = four.Replace("\"KeyCode\":120", "\"KeyCode\":79");
+        var fallback = (System.Collections.IList)parse.Invoke(null, [occupied])!;
+        Check((int)fallback[4]!.GetType().GetProperty("KeyCode")!.GetValue(fallback[4])! == 122); // O and F10 occupied: choose F11.
         var legacy = four[..^1] + ",{\"Action\":4,\"KeyCode\":122,\"Modifiers\":6}]";
         var legacyMigrated = (System.Collections.IList)parse.Invoke(null, [legacy])!;
         Check(legacyMigrated.Count == 5 && !legacyMigrated.Cast<object>().Any(b => Convert.ToInt32(b.GetType().GetProperty("Action")!.GetValue(b)) == 4));
         var restored = (System.Collections.IList)parse.Invoke(null, [System.Text.Json.JsonSerializer.Serialize(migrated)])!;
-        Check(restored.Count == 5 && (int)restored[4]!.GetType().GetProperty("KeyCode")!.GetValue(restored[4])! == 122);
+        Check(restored.Count == 5 && (int)restored[4]!.GetType().GetProperty("KeyCode")!.GetValue(restored[4])! == 79);
         var profile = new Profile { Name = "전투 프로필" };
         var layout = profile.Layouts[0];
         profile.Mappings.Add(new Mapping { Name = "공격", Trigger = new InputTrigger { KeyCode = 65, Modifiers = ModifierKeys.Control },
@@ -346,6 +507,28 @@ internal static class Program
         while (parent is not null && parent is not ScrollViewer) parent = VisualTreeHelper.GetParent(parent);
         ((ScrollViewer?)parent)?.ScrollToEnd();
         Render(window, Path.Combine(outputDirectory, "editor-wheel.png"), 1080, 650);
+        var triggerType = (ComboBox)window.FindName("TriggerTypeCombo");
+        triggerType.SelectedIndex = 6;
+        ((CheckBox)window.FindName("TriggerCtrlBox")).IsChecked = true;
+        Check(mapping.Trigger.Modifiers == ModifierKeys.Control && ((TextBlock)window.FindName("TriggerSummaryText")).Text.Contains("Ctrl + 휠 ↑"));
+        triggerType.SelectedIndex = 7;
+        Check(mapping.Trigger.Modifiers == ModifierKeys.Control && mapping.Trigger.WheelDirection == WheelDirection.Negative);
+        ((CheckBox)window.FindName("TriggerShiftBox")).IsChecked = true;
+        Check(mapping.Trigger.Modifiers == (ModifierKeys.Control | ModifierKeys.Shift));
+        ((CheckBox)window.FindName("WheelCtrlBox")).IsChecked = true;
+        ((CheckBox)window.FindName("WheelShiftBox")).IsChecked = true;
+        direction.SelectedIndex = 3;
+        mappings.SelectedIndex = -1; mappings.SelectedIndex = 0;
+        Check(mode.SelectedIndex == 2 && ((CheckBox)window.FindName("WheelCtrlBox")).IsChecked == true &&
+            ((CheckBox)window.FindName("WheelShiftBox")).IsChecked == true && ((CheckBox)window.FindName("TriggerCtrlBox")).IsChecked == true);
+        Check(FocusBind.Core.Input.WheelChord.TryRead(mapping.Actions.Steps, out var chordWheel, out var chordModifiers) &&
+            chordWheel!.Kind == ActionKind.HorizontalWheel && chordWheel.Amount == -360 && chordModifiers == (ModifierKeys.Control | ModifierKeys.Shift));
+        window.GetType().GetMethod("CommitInspector", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(window, null);
+        Check(mapping.Actions.Steps.Count == 5);
+        ((ScrollViewer?)parent)?.ScrollToTop();
+        Render(window, Path.Combine(outputDirectory, "editor-trigger-chord.png"), 1080, 650);
+        ((ScrollViewer?)parent)?.ScrollToEnd();
+        Render(window, Path.Combine(outputDirectory, "editor-wheel-chord.png"), 1080, 650);
         mode.SelectedIndex = 0;
         var clickMode = (ComboBox)window.FindName("ClickModeCombo");
         var restore = (CheckBox)window.FindName("RestoreCursorBox");

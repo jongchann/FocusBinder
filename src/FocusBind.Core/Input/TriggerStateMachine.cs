@@ -20,13 +20,13 @@ public sealed class TriggerStateMachine
         _longPressFired.Clear();
     }
 
-    public InputDecision Process(InputEvent input, IReadOnlyList<Mapping> mappings)
+    public InputDecision Process(InputEvent input, IReadOnlyList<Mapping> mappings, ModifierKeys? wheelModifiers = null)
     {
         if (input.Kind is TriggerKind.VerticalWheel or TriggerKind.HorizontalWheel)
         {
             var wheelMatches = mappings.Where(m => m.Enabled && m.Trigger.Kind == input.Kind
                 && m.Trigger.WheelDirection == input.WheelDirection
-                && m.Trigger.Modifiers == CurrentModifiers()).ToArray();
+                && m.Trigger.Modifiers == (wheelModifiers ?? CurrentModifiers())).ToArray();
             return new InputDecision(wheelMatches.Any(m => m.ConsumeOriginal), wheelMatches);
         }
 

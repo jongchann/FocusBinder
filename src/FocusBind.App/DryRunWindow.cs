@@ -72,7 +72,5 @@ internal sealed class DryRunWindow : Window
         if (!Dispatcher.CheckAccess()) { Dispatcher.Invoke(() => Trace(line)); return; }
         _log.AppendText(line + Environment.NewLine); _log.ScrollToEnd();
     }
-    private static string TriggerLabel(InputTrigger trigger) => trigger.Kind == TriggerKind.Key
-        ? KeyNames.Format(trigger.KeyCode, trigger.Modifiers)
-        : $"{trigger.Modifiers} · {trigger.Kind} · 버튼 {trigger.MouseButton} · {trigger.WheelDirection}";
+    private static string TriggerLabel(InputTrigger trigger) => KeyNames.FormatTrigger(trigger);
 }

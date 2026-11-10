@@ -73,32 +73,67 @@ public static class CoordinateTransform
                 x = client.X + target.X;
                 y = client.Y + target.Y;
                 break;
-            case CoordinateSpace.AnchoredOffset:
+            case CoordinateSpace.AnchoredOffset or CoordinateSpace.AnchoredPixelOffset:
                 var (anchorX, anchorY) = AnchorPosition(content, target.Anchor);
-                var referenceWidth = context.Layout.ReferenceWidth * context.Layout.Content.Width;
-                var referenceHeight = context.Layout.ReferenceHeight * context.Layout.Content.Height;
-                if (referenceWidth <= 0 || referenceHeight <= 0) return false;
-                var scaleX = content.Width / referenceWidth;
-                var scaleY = content.Height / referenceHeight;
-                var scale = context.Layout.Scale switch
-                {
-                    ScalePolicy.Stretch => (X: scaleX, Y: scaleY),
-                    ScalePolicy.UniformFit => (X: Math.Min(scaleX, scaleY), Y: Math.Min(scaleX, scaleY)),
-                    ScalePolicy.UniformFill => (X: Math.Max(scaleX, scaleY), Y: Math.Max(scaleX, scaleY)),
-                    ScalePolicy.NoScale => (X: 1.0, Y: 1.0),
-                    _ => throw new ArgumentOutOfRangeException(nameof(context))
-                };
+                if (!TryAnchorScale(context, target.Space, out var scale)) return false;
                 x = anchorX + target.X * scale.X;
                 y = anchorY + target.Y * scale.Y;
                 break;
             default: return false;
         }
         if (!double.IsFinite(x) || !double.IsFinite(y) || !client.Contains(x, y) ||
-            target.Space is CoordinateSpace.ContentNormalized or CoordinateSpace.AnchoredOffset && !content.Contains(x, y))
+            target.Space is CoordinateSpace.ContentNormalized or CoordinateSpace.AnchoredOffset or CoordinateSpace.AnchoredPixelOffset && !content.Contains(x, y))
             return false;
         point = new PixelPoint((int)Math.Round(x), (int)Math.Round(y));
         return client.Contains(point.X, point.Y) &&
-            (target.Space is not (CoordinateSpace.ContentNormalized or CoordinateSpace.AnchoredOffset) || content.Contains(point.X, point.Y));
+            (target.Space is not (CoordinateSpace.ContentNormalized or CoordinateSpace.AnchoredOffset or CoordinateSpace.AnchoredPixelOffset) || content.Contains(point.X, point.Y));
+    }
+
+    /// <summary>Records a point without changing the target's coordinate space or anchor.</summary>
+    public static bool TryCapture(CoordinateContext context, CoordinateTarget target, PixelPoint point)
+    {
+        if (context.Layout.Id != target.LayoutId || !context.Client.Contains(point.X, point.Y)) return false;
+        double x, y;
+        switch (target.Space)
+        {
+            case CoordinateSpace.ClientNormalized or CoordinateSpace.ContentNormalized:
+                var region = target.Space == CoordinateSpace.ClientNormalized ? context.Client : context.Content;
+                if (!TryCapture(region, point, out var normalized)) return false;
+                x = normalized.X; y = normalized.Y;
+                break;
+            case CoordinateSpace.FixedClientPixel:
+                x = point.X - (double)context.Client.X; y = point.Y - (double)context.Client.Y;
+                break;
+            case CoordinateSpace.AnchoredOffset or CoordinateSpace.AnchoredPixelOffset:
+                if (!context.Content.Contains(point.X, point.Y) || !Enum.IsDefined(target.Anchor) ||
+                    !TryAnchorScale(context, target.Space, out var scale)) return false;
+                var anchor = AnchorPosition(context.Content, target.Anchor);
+                x = (point.X - anchor.X) / scale.X; y = (point.Y - anchor.Y) / scale.Y;
+                break;
+            default: return false;
+        }
+        if (!double.IsFinite(x) || !double.IsFinite(y)) return false;
+        target.X = x; target.Y = y;
+        return true;
+    }
+
+    private static bool TryAnchorScale(CoordinateContext context, CoordinateSpace space, out (double X, double Y) scale)
+    {
+        scale = (1, 1);
+        if (space == CoordinateSpace.AnchoredPixelOffset) return true;
+        var width = context.Layout.ReferenceWidth * context.Layout.Content.Width;
+        var height = context.Layout.ReferenceHeight * context.Layout.Content.Height;
+        if (width <= 0 || height <= 0) return false;
+        var x = context.Content.Width / width; var y = context.Content.Height / height;
+        scale = context.Layout.Scale switch
+        {
+            ScalePolicy.Stretch => (x, y),
+            ScalePolicy.UniformFit => (Math.Min(x, y), Math.Min(x, y)),
+            ScalePolicy.UniformFill => (Math.Max(x, y), Math.Max(x, y)),
+            ScalePolicy.NoScale => (1, 1),
+            _ => (0, 0)
+        };
+        return double.IsFinite(scale.X) && double.IsFinite(scale.Y) && scale.X > 0 && scale.Y > 0;
     }
 
     private static (double X, double Y) AnchorPosition(PixelRect rect, Anchor anchor) => anchor switch

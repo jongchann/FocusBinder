@@ -532,7 +532,7 @@ public partial class MainWindow : Window
     {
         if (_transferringProfiles || _startingRuntime) return;
         if (_openEditors > 0) { RuntimeStatusText.Text = "편집 내용을 저장하고 편집기를 닫은 뒤 가져오세요."; return; }
-        var dialog = new Microsoft.Win32.OpenFileDialog { Title = "프로필 가져오기 (기존 프로필에 복사본 추가)", Filter = "FocusBind JSON (*.json)|*.json", CheckFileExists = true };
+        var dialog = new Microsoft.Win32.OpenFileDialog { Title = "프로필 가져오기", Filter = "FocusBind JSON (*.json)|*.json", CheckFileExists = true };
         if (dialog.ShowDialog(this) != true) return;
         _transferringProfiles = true;
         try
@@ -543,7 +543,23 @@ public partial class MainWindow : Window
             var imported = await new ProfileStore(dialog.FileName).LoadAsync();
             if (imported.Profiles.Count == 0) throw new InvalidOperationException("가져올 프로필이 없습니다.");
             ProfileDocument result;
-            try { result = ProfileTransfer.Merge(await _store.LoadAsync(), imported); }
+            try
+            {
+                var current = await _store.LoadAsync();
+                Dictionary<Guid, ProfileImportChoice>? choices = null;
+                if (imported.Profiles.Any(p => ProfileTransfer.Conflicts(current, p).Count > 0))
+                {
+                    var conflicts = new ProfileImportWindow(current, imported) { Owner = this };
+                    if (conflicts.ShowDialog() != true) return;
+                    choices = conflicts.Choices;
+                }
+                if (choices is not null && imported.Profiles.All(p => choices.TryGetValue(p.Id, out var choice) && choice.Mode == ProfileImportMode.Skip))
+                {
+                    RuntimeStatusText.Text = "모든 프로파일을 건너뛰었습니다. 기존 설정을 유지합니다.";
+                    return;
+                }
+                result = ProfileTransfer.Merge(current, imported, choices);
+            }
             catch (Exception ex) when (ex is ProfileValidationException or System.Text.Json.JsonException)
             {
                 if (MessageBox.Show(this,
@@ -560,7 +576,7 @@ public partial class MainWindow : Window
             if (_runtime is not null) StopRuntime("프로필을 가져오는 동안 매핑을 중지합니다.");
             await _store.SaveAsync(result);
             _overlayDocument = result;
-            RuntimeStatusText.Text = $"프로필 {imported.Profiles.Count}개 가져오기 완료 · 매핑은 다시 시작하세요." +
+            RuntimeStatusText.Text = "프로필 가져오기 완료 (선택한 병합·복사·건너뛰기 적용) · 매핑은 다시 시작하세요." +
                 (backup is null ? "" : $"\n이전 설정 백업: {backup}");
         }
         catch (Exception ex) { RuntimeStatusText.Text = $"가져오기 실패 (기존 설정 유지): {ex.Message}"; }

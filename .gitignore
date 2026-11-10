@@ -12,3 +12,5 @@ design-preview/
 NVIDIA Corporation/
 .vs/
 artifacts/
+# Local profile exports may contain machine-specific installation paths.
+/profiles/
